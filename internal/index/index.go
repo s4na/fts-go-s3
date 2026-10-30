@@ -50,12 +50,11 @@ func shard(term string, count int) int {
 }
 
 func terms(text string) []string {
-	text = tokenize.Normalize(text)
 	seen := make(map[string]bool)
 	for _, term := range (tokenize.Bigram{}).Tokens(text) {
 		seen[term] = true
 	}
-	for _, r := range text {
+	for _, r := range tokenize.Normalize(text) {
 		seen[string(r)] = true
 	}
 	result := make([]string, 0, len(seen))
