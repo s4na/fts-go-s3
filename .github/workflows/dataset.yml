@@ -50,12 +50,32 @@ jobs:
           printf '\n### Go module graph\n\n```\n' >> "$GITHUB_STEP_SUMMARY"
           go mod graph >> "$GITHUB_STEP_SUMMARY"
           printf '\n```\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: Start S3 storage
+        if: matrix.count != 100000
+        run: |
+          docker run -d --name index-s3 -p 8333:8333 chrislusf/seaweedfs:latest server -s3 -ip.bind=0.0.0.0
+          for i in $(seq 1 60); do
+            if curl -s -o /dev/null http://localhost:8333/; then exit 0; fi
+            sleep 2
+          done
+          docker logs index-s3
+          exit 1
+      - name: Compare S3 index with oracle
+        if: matrix.count != 100000
+        env:
+          S3_ENDPOINT: http://localhost:8333
+        run: |
+          go run ./cmd/indexbench --docs .data/generated/documents.jsonl --queries .data/generated/queries.json --shards 256 --out .data/index-results.json
+          printf '\n### Index results\n\n```json\n' >> "$GITHUB_STEP_SUMMARY"
+          cat .data/index-results.json >> "$GITHUB_STEP_SUMMARY"
+          printf '\n```\n' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: oracle-${{ matrix.count }}
           path: |
             .data/results.json
+            .data/index-results.json
             .data/generated/queries.json
           include-hidden-files: true
           if-no-files-found: ignore
