@@ -558,3 +558,49 @@ func TestReclaimExcludesWritesAfterBarrier(t *testing.T) {
 		t.Fatalf("new publication marked: %v %v", markers, err)
 	}
 }
+
+func TestMixedSegmentVersions(t *testing.T) {
+	ctx := context.Background()
+	store := &MemoryStore{}
+	old, err := encodeSegmentVersion(map[string]indexedDocument{
+		"old": {Terms: terms("猫と犬")},
+	}, legacySegmentVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Put(ctx, "index/segments/old", old, PutOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := json.Marshal(manifest{
+		Version: manifestVersion, Generation: "old",
+		Segments: []segmentRef{{Key: "index/segments/old", Size: int64(len(old)), Documents: 1}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Put(ctx, "index/manifest", initial, PutOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	index, err := Open(store, "index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := index.Apply(ctx, []Change{{Key: "new", Data: []byte("猫と魚")}}); err != nil {
+		t.Fatal(err)
+	}
+	assertOracle(t, index, map[string]string{"old": "猫と犬", "new": "猫と魚"}, []string{"猫", "猫と", "犬", "魚"})
+	if ok, err := index.Compact(ctx); err != nil || !ok {
+		t.Fatalf("compact mixed versions: %t, %v", ok, err)
+	}
+	assertOracle(t, index, map[string]string{"old": "猫と犬", "new": "猫と魚"}, []string{"猫", "猫と", "犬", "魚"})
+}
+
+func TestInvalidVersionTwoPostings(t *testing.T) {
+	reader := &segmentReader{version: segmentVersion, ref: segmentRef{Documents: 2}}
+	for _, data := range [][]byte{{0}, {3}, {1, 0}, {0x80}, {1, 2}, {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 2}} {
+		table := []string{"a", "b"}
+		if _, err := reader.decodePosting(context.Background(), data, &table); err == nil {
+			t.Errorf("accepted invalid posting %x", data)
+		}
+	}
+}

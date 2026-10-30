@@ -3,6 +3,7 @@ package zenbun
 import (
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -222,6 +223,43 @@ func decodeList(data []byte) ([]string, error) {
 	return keys, nil
 }
 
+// decodePosting resolves version 2 document IDs through the segment's sorted
+// document table. The table is read at most once per segment and search.
+func (reader *segmentReader) decodePosting(ctx context.Context, data []byte, documentKeys *[]string) ([]string, error) {
+	if reader.version == legacySegmentVersion {
+		return decodeList(data)
+	}
+	if *documentKeys == nil {
+		table, found, err := reader.lookup(ctx, "a")
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, errors.New("zenbun: missing segment document list")
+		}
+		keys, err := decodeList(table)
+		if err != nil || len(keys) != reader.ref.Documents {
+			return nil, errors.New("zenbun: invalid segment document table")
+		}
+		*documentKeys = keys
+	}
+	keys := make([]string, 0)
+	var id uint64
+	for len(data) > 0 {
+		delta, n := binary.Uvarint(data)
+		if n <= 0 || delta == 0 || delta > uint64(len(*documentKeys))-id {
+			return nil, errors.New("zenbun: invalid segment posting")
+		}
+		id += delta
+		keys = append(keys, (*documentKeys)[id-1])
+		data = data[n:]
+	}
+	if len(keys) == 0 {
+		return nil, errors.New("zenbun: empty segment posting")
+	}
+	return keys, nil
+}
+
 func readDocument(ctx context.Context, reader *segmentReader, key string) (indexedDocument, bool, error) {
 	data, found, err := reader.lookup(ctx, "k"+key)
 	if err != nil || !found {
@@ -265,6 +303,7 @@ func (i *Index) Search(ctx context.Context, query string) ([]string, error) {
 	result := make(map[string]bool)
 	for n := len(readers) - 1; n >= 0; n-- {
 		var candidates map[string]bool
+		var documentKeys []string
 		for _, term := range queryTerms {
 			data, found, err := readers[n].lookup(ctx, "t"+term)
 			if err != nil {
@@ -274,7 +313,7 @@ func (i *Index) Search(ctx context.Context, query string) ([]string, error) {
 				candidates = nil
 				break
 			}
-			keys, err := decodeList(data)
+			keys, err := readers[n].decodePosting(ctx, data, &documentKeys)
 			if err != nil {
 				return nil, err
 			}

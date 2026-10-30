@@ -17,7 +17,8 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-const segmentVersion = 1
+const segmentVersion = 2
+const legacySegmentVersion = 1
 const footerSize = 32
 const dictionaryBlockSize = 64
 const maxMetadataSize = 64 << 20
@@ -90,15 +91,25 @@ func terms(text string) []string {
 	return out
 }
 
-// A segment contains JSON posting lists, dictionary blocks, a sparse block
-// index and a fixed-size footer. Each posting list contains keys directly;
-// key records carry the terms needed to merge segments without source text.
+// A segment contains a sorted document table, posting lists, dictionary blocks,
+// a sparse index and a fixed-size footer. Version 2 stores delta-encoded IDs.
 func encodeSegment(docs map[string]indexedDocument) ([]byte, error) {
+	return encodeSegmentVersion(docs, segmentVersion)
+}
+
+func encodeSegmentVersion(docs map[string]indexedDocument, version uint32) ([]byte, error) {
+	if version != legacySegmentVersion && version != segmentVersion {
+		return nil, errors.New("zenbun: unsupported segment version")
+	}
 	entries := make(map[string][]byte)
 	keys := make([]string, 0, len(docs))
-	posting := make(map[string][]string)
-	for key, doc := range docs {
+	posting := make(map[string][]uint64)
+	for key := range docs {
 		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for n, key := range keys {
+		doc := docs[key]
 		data, err := json.Marshal(doc)
 		if err != nil {
 			return nil, err
@@ -106,21 +117,32 @@ func encodeSegment(docs map[string]indexedDocument) ([]byte, error) {
 		entries["k"+key] = data
 		if !doc.Deleted {
 			for _, term := range doc.Terms {
-				posting[term] = append(posting[term], key)
+				posting[term] = append(posting[term], uint64(n+1))
 			}
 		}
 	}
-	sort.Strings(keys)
 	list, err := json.Marshal(keys)
 	if err != nil {
 		return nil, err
 	}
 	entries["a"] = list
 	for term, ids := range posting {
-		sort.Strings(ids)
-		data, err := json.Marshal(ids)
-		if err != nil {
-			return nil, err
+		var data []byte
+		if version == legacySegmentVersion {
+			legacyKeys := make([]string, 0, len(ids))
+			for _, id := range ids {
+				legacyKeys = append(legacyKeys, keys[id-1])
+			}
+			data, err = json.Marshal(legacyKeys)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			var previous uint64
+			for _, id := range ids {
+				data = binary.AppendUvarint(data, id-previous)
+				previous = id
+			}
 		}
 		entries["t"+term] = data
 	}
@@ -171,7 +193,7 @@ func encodeSegment(docs map[string]indexedDocument) ([]byte, error) {
 	_, _ = out.Write(index)
 	var footer [footerSize]byte
 	copy(footer[:8], segmentMagic[:])
-	binary.BigEndian.PutUint32(footer[8:12], segmentVersion)
+	binary.BigEndian.PutUint32(footer[8:12], version)
 	binary.BigEndian.PutUint64(footer[16:24], uint64(indexOffset))
 	binary.BigEndian.PutUint64(footer[24:32], uint64(len(index)))
 	_, _ = out.Write(footer[:])
@@ -186,7 +208,7 @@ func parseFooter(footer []byte, size int64) (int64, int64, error) {
 	if len(footer) != footerSize || !bytes.Equal(footer[:8], segmentMagic[:]) {
 		return 0, 0, errors.New("zenbun: invalid segment footer")
 	}
-	if binary.BigEndian.Uint32(footer[8:12]) != segmentVersion {
+	if v := binary.BigEndian.Uint32(footer[8:12]); v != legacySegmentVersion && v != segmentVersion {
 		return 0, 0, errors.New("zenbun: unsupported segment version")
 	}
 	off, length := binary.BigEndian.Uint64(footer[16:24]), binary.BigEndian.Uint64(footer[24:32])
@@ -211,6 +233,7 @@ func readRange(ctx context.Context, store Store, key string, start, length int64
 }
 
 type segmentReader struct {
+	version     uint32
 	store       Store
 	ref         segmentRef
 	blocks      []blockIndex
@@ -248,7 +271,7 @@ func openSegment(ctx context.Context, store Store, ref segmentRef) (*segmentRead
 			return nil, errors.New("zenbun: invalid dictionary block")
 		}
 	}
-	return &segmentReader{store: store, ref: ref, blocks: blocks, bloom: index.Bloom, indexOffset: offset}, nil
+	return &segmentReader{version: binary.BigEndian.Uint32(footer[8:12]), store: store, ref: ref, blocks: blocks, bloom: index.Bloom, indexOffset: offset}, nil
 }
 
 func (s *segmentReader) lookup(ctx context.Context, term string) ([]byte, bool, error) {
