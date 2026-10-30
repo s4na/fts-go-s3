@@ -45,6 +45,11 @@ jobs:
           go run ./cmd/oraclebench --docs .data/generated/documents.jsonl --queries .data/generated/queries.json --out .data/results.json | tee .data/summary.txt
           printf '## Oracle: %s Wikipedia articles + 2 Aozora works\n\n' '${{ matrix.count }}' >> "$GITHUB_STEP_SUMMARY"
           cat .data/summary.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Record dependency graph
+        run: |
+          printf '\n### Go module graph\n\n```\n' >> "$GITHUB_STEP_SUMMARY"
+          go mod graph >> "$GITHUB_STEP_SUMMARY"
+          printf '\n```\n' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
