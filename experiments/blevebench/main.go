@@ -67,7 +67,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = idx.Close() }()
+	closed := false
+	defer func() {
+		if !closed {
+			_ = idx.Close()
+		}
+	}()
 	batch := idx.NewBatch()
 	for n, doc := range docs {
 		if err := batch.Index(doc.ID, map[string]string{"content": tokenize.Normalize(doc.Title + "\n" + doc.Text)}); err != nil {
@@ -122,6 +127,7 @@ func run() error {
 		byKind[q.Kind]["false_negatives"] += missing
 		byKind[q.Kind]["false_positives"] += fp
 	}
+	closed = true
 	if err := idx.Close(); err != nil {
 		return err
 	}
