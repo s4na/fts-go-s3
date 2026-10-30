@@ -42,9 +42,9 @@ const ReadLease = time.Minute
 const ClockSkewAllowance = 10 * time.Second
 
 type RetiredSegment struct {
-	ID string `json:"id"`
+	ID        string    `json:"id"`
 	RetiredAt time.Time `json:"retired_at"`
-	Packed bool `json:"packed"`
+	Packed    bool      `json:"packed"`
 }
 
 type Manifest struct {
@@ -55,7 +55,7 @@ type Manifest struct {
 	Ranges       map[string][]Span `json:"ranges,omitempty"`
 	BloomEnabled bool              `json:"bloom_enabled,omitempty"`
 	Filters      map[string][]byte `json:"filters,omitempty"`
-	Retired      []RetiredSegment `json:"retired,omitempty"`
+	Retired      []RetiredSegment  `json:"retired,omitempty"`
 	acquiredAt   time.Time
 }
 
@@ -217,6 +217,7 @@ func (i Index) Build(ctx context.Context, docs []oracle.Document, count int) (Ma
 		return Manifest{}, err
 	}
 	key := strings.Trim(i.Prefix, "/") + "/manifest.json"
+	manifest.acquiredAt = time.Now()
 	r, err := i.S3.Request(ctx, http.MethodPut, i.Bucket, key, nil, http.Header{"If-None-Match": {"*"}}, data)
 	if err != nil {
 		return Manifest{}, err
@@ -227,7 +228,6 @@ func (i Index) Build(ctx context.Context, docs []oracle.Document, count int) (Ma
 	if r.Status < 200 || r.Status >= 300 {
 		return Manifest{}, fmt.Errorf("publish manifest: HTTP %d: %s", r.Status, r.Body)
 	}
-	manifest.acquiredAt = time.Now()
 	return manifest, nil
 }
 
