@@ -24,6 +24,7 @@ type Index struct {
 	Bucket string
 	Prefix string
 	Range  bool
+	Bloom  bool
 }
 
 type Span struct {
@@ -37,6 +38,8 @@ type Manifest struct {
 	Active    []bool            `json:"active"`
 	Segments  []string          `json:"segments"`
 	Ranges    map[string][]Span `json:"ranges,omitempty"`
+	BloomEnabled bool `json:"bloom_enabled,omitempty"`
+	Filters map[string][]byte `json:"filters,omitempty"`
 }
 
 func (i Index) object(ctx context.Context, method, key string, data []byte) (s3lite.Result, error) {
@@ -150,7 +153,7 @@ func (i Index) Build(ctx context.Context, docs []oracle.Document, count int) (Ma
 	}
 	segment := fmt.Sprintf("%x", random[:])
 	shards := make([]map[string][]uint64, count)
-	manifest := Manifest{Shards: count, Documents: make([]string, 0, len(docs)), Segments: []string{segment}}
+	manifest := Manifest{Shards: count, Documents: make([]string, 0, len(docs)), Segments: []string{segment}, BloomEnabled: i.Bloom}
 	seen := make(map[string]bool)
 	for index, doc := range docs {
 		if doc.ID == "" || seen[doc.ID] {
@@ -188,6 +191,9 @@ func (i Index) Build(ctx context.Context, docs []oracle.Document, count int) (Ma
 			return Manifest{}, err
 		}
 		manifest.Ranges = map[string][]Span{segment: spans}
+	}
+	if i.Bloom {
+		manifest.Filters = map[string][]byte{segment: filterFor(shards)}
 	}
 	data, err := json.Marshal(manifest)
 	if err != nil {
@@ -297,6 +303,18 @@ func (i Index) Apply(ctx context.Context, changes []Change) error {
 	}
 	if len(postings) > 0 {
 		manifest.Segments = append(manifest.Segments, segment)
+		if manifest.BloomEnabled {
+			var terms []string
+			for _, posting := range postings {
+				for term := range posting {
+					terms = append(terms, term)
+				}
+			}
+			if manifest.Filters == nil {
+				manifest.Filters = make(map[string][]byte)
+			}
+			manifest.Filters[segment] = newBloom(terms)
+		}
 	}
 	return i.publish(ctx, manifest, etag)
 }
@@ -332,6 +350,7 @@ func (i Index) Compact(ctx context.Context) error {
 		return err
 	}
 	segment := fmt.Sprintf("%x", random[:])
+	var compactTerms []string
 	for n := 0; n < manifest.Shards; n++ {
 		merged := make(map[string][]uint64)
 		for _, previous := range manifest.Segments {
@@ -360,6 +379,11 @@ func (i Index) Compact(ctx context.Context) error {
 		if len(merged) == 0 {
 			continue
 		}
+		if manifest.BloomEnabled {
+			for term := range merged {
+				compactTerms = append(compactTerms, term)
+			}
+		}
 		for _, ids := range merged {
 			sort.Slice(ids, func(a, b int) bool { return ids[a] < ids[b] })
 		}
@@ -369,6 +393,9 @@ func (i Index) Compact(ctx context.Context) error {
 	}
 	manifest.Segments = []string{segment}
 	manifest.Ranges = nil
+	if manifest.BloomEnabled {
+		manifest.Filters = map[string][]byte{segment: newBloom(compactTerms)}
+	}
 	return i.publish(ctx, manifest, etag)
 }
 
@@ -394,6 +421,17 @@ func (i Index) Search(ctx context.Context, query string, cached *Manifest) ([]st
 	}
 	var out []string
 	for _, segment := range manifest.Segments {
+		filter := bloom(manifest.Filters[segment])
+		possible := true
+		for _, term := range queryTerms {
+			if !filter.mayContain(term) {
+				possible = false
+				break
+			}
+		}
+		if !possible {
+			continue
+		}
 		ids, err := i.searchSegment(ctx, manifest, segment, queryTerms)
 		if err != nil {
 			return nil, err

@@ -33,3 +33,16 @@ func TestPostingsEncoding(t *testing.T) {
 		}
 	}
 }
+
+func TestBloomNeverRejectsInsertedTerms(t *testing.T) {
+	terms := []string{"猫", "日本", "alphabet", "𪛖"}
+	filter := newBloom(terms)
+	for _, term := range terms {
+		if !filter.mayContain(term) {
+			t.Fatalf("filter rejected inserted term %q", term)
+		}
+	}
+	if !bloom(nil).mayContain("anything") {
+		t.Fatal("missing filter must not reject terms")
+	}
+}

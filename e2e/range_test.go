@@ -24,7 +24,7 @@ func TestRangeLayout(t *testing.T) {
 	if err != nil || r.Status != 200 {
 		t.Fatalf("create bucket: %d %v", r.Status, err)
 	}
-	idx := index.Index{S3: client, Bucket: "fts-range", Prefix: "index", Range: true}
+	idx := index.Index{S3: client, Bucket: "fts-range", Prefix: "index", Range: true, Bloom: true}
 	old, err := idx.Build(ctx, []oracle.Document{{ID: "one", Text: "最初の文章"}}, 16)
 	if err != nil {
 		t.Fatal(err)

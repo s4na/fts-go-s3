@@ -46,6 +46,7 @@ func run() error {
 	output := flag.String("out", "index-results.json", "output JSON")
 	count := flag.Int("shards", 256, "shard count")
 	layout := flag.String("layout", "shards", "shards or range")
+	useBloom := flag.Bool("bloom", false, "enable per-segment Bloom filters")
 	flag.Parse()
 	if *layout != "shards" && *layout != "range" {
 		return fmt.Errorf("invalid layout %q", *layout)
@@ -84,7 +85,7 @@ func run() error {
 	if err != nil || r.Status != 200 {
 		return fmt.Errorf("create bucket: status %d: %v %s", r.Status, err, r.Body)
 	}
-	idx := index.Index{S3: client, Bucket: "fts-index", Prefix: "index", Range: *layout == "range"}
+	idx := index.Index{S3: client, Bucket: "fts-index", Prefix: "index", Range: *layout == "range", Bloom: *useBloom}
 	start := time.Now()
 	manifest, err := idx.Build(ctx, docs, *count)
 	if err != nil {
@@ -143,11 +144,12 @@ func run() error {
 		Documents   int           `json:"documents"`
 		Shards      int           `json:"shards"`
 		Layout      string        `json:"layout"`
+		Bloom       bool          `json:"bloom"`
 		BuildMillis int64         `json:"build_ms"`
 		Build       s3lite.Counts `json:"build_including_bucket"`
 		Uncached    stats         `json:"uncached"`
 		Cached      stats         `json:"cached_manifest"`
-	}{len(docs), *count, *layout, buildMillis, build, uncached, cached}
+	}{len(docs), *count, *layout, *useBloom, buildMillis, build, uncached, cached}
 	data, err = json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return err
