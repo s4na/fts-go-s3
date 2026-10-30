@@ -33,13 +33,13 @@ type Span struct {
 }
 
 type Manifest struct {
-	Shards    int               `json:"shards"`
-	Documents []string          `json:"documents"`
-	Active    []bool            `json:"active"`
-	Segments  []string          `json:"segments"`
-	Ranges    map[string][]Span `json:"ranges,omitempty"`
-	BloomEnabled bool `json:"bloom_enabled,omitempty"`
-	Filters map[string][]byte `json:"filters,omitempty"`
+	Shards       int               `json:"shards"`
+	Documents    []string          `json:"documents"`
+	Active       []bool            `json:"active"`
+	Segments     []string          `json:"segments"`
+	Ranges       map[string][]Span `json:"ranges,omitempty"`
+	BloomEnabled bool              `json:"bloom_enabled,omitempty"`
+	Filters      map[string][]byte `json:"filters,omitempty"`
 }
 
 func (i Index) object(ctx context.Context, method, key string, data []byte) (s3lite.Result, error) {
