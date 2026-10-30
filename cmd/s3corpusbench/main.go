@@ -168,6 +168,61 @@ func run() error {
 	}
 	docs[0] = updated
 	afterUpdate := meter.Snapshot()
+	added := oracle.Document{ID: "source-flow-added", Text: "新規追加の検証語"}
+	if _, exists := original[added.ID]; exists {
+		return fmt.Errorf("addition ID already exists")
+	}
+	data, err = json.Marshal(added)
+	if err != nil {
+		return err
+	}
+	if _, err := request("PUT", "docs/"+added.ID, data); err != nil {
+		return err
+	}
+	r, err = request("GET", "docs/"+added.ID, nil)
+	if err != nil {
+		return err
+	}
+	var readAdded oracle.Document
+	if err := json.Unmarshal(r.Body, &readAdded); err != nil || !reflect.DeepEqual(readAdded, added) {
+		return fmt.Errorf("added source content mismatch: %v", err)
+	}
+	if err := idx.Update(ctx, added.ID, &readAdded); err != nil {
+		return err
+	}
+	addedHits, err := idx.Search(ctx, "新規追加の検証語", nil)
+	if err != nil {
+		return err
+	}
+	foundAdded := false
+	for _, id := range addedHits {
+		if id == added.ID {
+			foundAdded = true
+		}
+	}
+	if !foundAdded {
+		return fmt.Errorf("added document is missing from search")
+	}
+	if _, err := request("DELETE", "docs/"+added.ID, nil); err != nil {
+		return err
+	}
+	r, err = client.Request(ctx, "GET", bucket, "docs/"+added.ID, nil, nil, nil)
+	if err != nil || r.Status != http.StatusNotFound {
+		return fmt.Errorf("deleted source remains: HTTP %d: %v", r.Status, err)
+	}
+	if err := idx.Update(ctx, added.ID, nil); err != nil {
+		return err
+	}
+	deletedHits, err := idx.Search(ctx, "新規追加の検証語", nil)
+	if err != nil {
+		return err
+	}
+	for _, id := range deletedHits {
+		if id == added.ID {
+			return fmt.Errorf("deleted document remains in search")
+		}
+	}
+	afterAddDelete := meter.Snapshot()
 	truth := oracle.New(docs)
 	var missed int
 	for _, query := range []string{"検証用の追記文章", first.Title, "猫", "𪛖𪛖𪛖𪛖𪛖𪛖"} {
@@ -185,16 +240,16 @@ func run() error {
 			}
 		}
 	}
-	payload := map[string]interface{}{
-		"documents":               len(docs),
-		"list_pages":              pages,
-		"source_upload":           difference(afterUpload, beforeUpload),
-		"source_list_and_read":    difference(afterRead, afterUpload),
-		"index_build":             difference(afterBuild, afterRead),
-		"source_and_index_update": difference(afterUpdate, afterBuild),
-		"queries":                 4,
-		"false_negatives":         missed,
-	}
+	payload := make(map[string]interface{})
+	payload["documents"] = len(docs)
+	payload["list_pages"] = pages
+	payload["source_upload"] = difference(afterUpload, beforeUpload)
+	payload["source_list_and_read"] = difference(afterRead, afterUpload)
+	payload["index_build"] = difference(afterBuild, afterRead)
+	payload["source_and_index_update"] = difference(afterUpdate, afterBuild)
+	payload["source_add_delete_and_search"] = difference(afterAddDelete, afterUpdate)
+	payload["queries"] = 4
+	payload["false_negatives"] = missed
 	data, err = json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return err
