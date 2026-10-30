@@ -16,15 +16,29 @@ import (
 )
 
 type manifestBarrier struct {
-	base  http.RoundTripper
-	ready sync.WaitGroup
+	base    http.RoundTripper
+	mu      sync.Mutex
+	arrived int
+	ready   chan struct{}
 }
 
 func (b *manifestBarrier) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := b.base.RoundTrip(req)
-	if err == nil && req.Method == "GET" && strings.HasSuffix(req.URL.Path, "/manifest.json") {
-		b.ready.Done()
-		b.ready.Wait()
+	if req.Method == "GET" && strings.HasSuffix(req.URL.Path, "/manifest.json") {
+		b.mu.Lock()
+		b.arrived++
+		if b.arrived == 2 {
+			close(b.ready)
+		}
+		b.mu.Unlock()
+		select {
+		case <-b.ready:
+		case <-req.Context().Done():
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+			return nil, req.Context().Err()
+		}
 	}
 	return resp, err
 }
@@ -45,15 +59,14 @@ func TestConcurrentWriters(t *testing.T) {
 	if _, err := idx.Build(ctx, []oracle.Document{{ID: "base", Text: "baseline"}}, 8); err != nil {
 		t.Fatal(err)
 	}
-	barrier := &manifestBarrier{base: http.DefaultTransport}
-	barrier.ready.Add(2)
+	barrier := &manifestBarrier{base: http.DefaultTransport, ready: make(chan struct{})}
 	racingClient := &s3lite.Client{Endpoint: endpoint, AccessKey: "testaccess", SecretKey: "testsecret", HTTP: &http.Client{Transport: barrier, Timeout: 10 * time.Second}}
 	racing := index.Index{S3: racingClient, Bucket: "fts-race", Prefix: "index"}
 	out := make(chan error, 2)
 	for _, id := range []string{"first", "second"} {
 		go func(id string) {
 			doc := oracle.Document{ID: id, Text: "concurrent"}
-			out <- tracing.Update(ctx, id, &doc)
+			out <- racing.Update(ctx, id, &doc)
 		}(id)
 	}
 	first, second := <-out, <-out
