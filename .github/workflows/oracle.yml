@@ -42,9 +42,11 @@ jobs:
       - name: Check recall and record metrics
         run: |
           go run ./cmd/measure --corpus .data/documents.jsonl --batch 1000 --output .data/metrics.json
-          printf '## Corpus recall and I/O metrics\n\n```json\n' >> "$GITHUB_STEP_SUMMARY"
-          cat .data/metrics.json >> "$GITHUB_STEP_SUMMARY"
-          printf '\n```\n' >> "$GITHUB_STEP_SUMMARY"
+          {
+            printf '## Corpus recall and I/O metrics\n\n```json\n'
+            cat .data/metrics.json
+            printf '\n```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Compare with latest main measurement
         if: github.event_name == 'pull_request'
         env:

@@ -29,7 +29,7 @@ jobs:
         run: docker run -d --name s3 -p 8333:8333 chrislusf/seaweedfs:latest server -s3 -ip.bind=0.0.0.0
       - name: Wait for storage
         run: |
-          for i in $(seq 1 60); do
+          for ((i=0; i<60; i++)); do
             if curl -s -o /dev/null http://localhost:8333/; then exit 0; fi
             sleep 2
           done
