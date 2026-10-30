@@ -203,21 +203,21 @@ func run() (runErr error) {
 		return err
 	}
 	payload := map[string]interface{}{
-		"singles":           *singles,
-		"single_puts":       afterSingles.Requests["PUT"] - before.Requests["PUT"] - periodicPuts,
-		"single_sent_bytes": afterSingles.SentBytes - before.SentBytes - periodicBytes,
-		"periodic_compactions": periodicCompactions,
-		"periodic_compact_gets": periodicGets,
-		"periodic_compact_puts": periodicPuts,
+		"singles":                     *singles,
+		"single_puts":                 afterSingles.Requests["PUT"] - before.Requests["PUT"] - periodicPuts,
+		"single_sent_bytes":           afterSingles.SentBytes - before.SentBytes - periodicBytes,
+		"periodic_compactions":        periodicCompactions,
+		"periodic_compact_gets":       periodicGets,
+		"periodic_compact_puts":       periodicPuts,
 		"periodic_compact_sent_bytes": periodicBytes,
-		"batches":           *batches,
-		"batch_documents":   100,
-		"batch_puts":        afterBatches.Requests["PUT"] - afterSingles.Requests["PUT"],
-		"batch_sent_bytes":  afterBatches.SentBytes - afterSingles.SentBytes,
-		"compact_gets":      afterCompact.Requests["GET"] - beforeCompact.Requests["GET"],
-		"compact_puts":      afterCompact.Requests["PUT"] - beforeCompact.Requests["PUT"],
-		"elapsed_ms":        time.Since(start).Milliseconds(),
-		"snapshots":         snapshots,
+		"batches":                     *batches,
+		"batch_documents":             100,
+		"batch_puts":                  afterBatches.Requests["PUT"] - afterSingles.Requests["PUT"],
+		"batch_sent_bytes":            afterBatches.SentBytes - afterSingles.SentBytes,
+		"compact_gets":                afterCompact.Requests["GET"] - beforeCompact.Requests["GET"],
+		"compact_puts":                afterCompact.Requests["PUT"] - beforeCompact.Requests["PUT"],
+		"elapsed_ms":                  time.Since(start).Milliseconds(),
+		"snapshots":                   snapshots,
 	}
 	data, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
