@@ -604,3 +604,122 @@ func TestInvalidVersionTwoPostings(t *testing.T) {
 		}
 	}
 }
+
+type countingSegmentStore struct {
+	Store
+	segmentGets int
+}
+
+func (s *countingSegmentStore) Get(ctx context.Context, key string, r *ByteRange) (Object, error) {
+	if strings.Contains(key, "/segments/") {
+		s.segmentGets++
+	}
+	return s.Store.Get(ctx, key, r)
+}
+
+func TestSyncReadsSegmentsNotDocuments(t *testing.T) {
+	ctx := context.Background()
+	memory := &MemoryStore{}
+	store := &countingSegmentStore{Store: memory}
+	index, _ := Open(store, "index/")
+	for n := 0; n < 120; n++ {
+		key := fmt.Sprintf("docs/%03d", n)
+		if _, err := memory.Put(ctx, key, []byte("猫"), PutOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := index.Sync(ctx, memory, "docs/"); err != nil {
+		t.Fatal(err)
+	}
+	store.segmentGets = 0
+	if err := index.Sync(ctx, memory, "docs/"); err != nil {
+		t.Fatal(err)
+	}
+	if store.segmentGets > 3 {
+		t.Fatalf("unchanged sync issued %d segment GETs; want at most 3", store.segmentGets)
+	}
+}
+
+type failingSource struct {
+	Store
+	failKey string
+}
+
+func (s *failingSource) Get(ctx context.Context, key string, r *ByteRange) (Object, error) {
+	if key == s.failKey {
+		return Object{}, errors.New("injected source error")
+	}
+	return s.Store.Get(ctx, key, r)
+}
+
+func TestSyncBatchCanResumeAfterFailure(t *testing.T) {
+	ctx := context.Background()
+	store := &MemoryStore{}
+	for n := 0; n <= syncBatchSize; n++ {
+		key := fmt.Sprintf("docs/%04d", n)
+		if _, err := store.Put(ctx, key, []byte("猫"), PutOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	index, _ := Open(store, "index/")
+	source := &failingSource{Store: store, failKey: fmt.Sprintf("docs/%04d", syncBatchSize)}
+	if err := index.Sync(ctx, source, "docs/"); err == nil {
+		t.Fatal("expected source error")
+	}
+	m, _, err := index.loadManifest(ctx)
+	if err != nil || len(m.Segments) != 1 || m.Segments[0].Documents != syncBatchSize {
+		t.Fatalf("first batch not published: %+v, %v", m, err)
+	}
+	if err := index.Sync(ctx, store, "docs/"); err != nil {
+		t.Fatal(err)
+	}
+	results, err := index.Search(ctx, "猫")
+	if err != nil || len(results) != syncBatchSize+1 {
+		t.Fatalf("resume lost documents: %d, %v", len(results), err)
+	}
+}
+
+type interleavingManifestStore struct {
+	Store
+	changed bool
+}
+
+func (s *interleavingManifestStore) Put(ctx context.Context, key string, data []byte, options PutOptions) (string, error) {
+	etag, err := s.Store.Put(ctx, key, data, options)
+	if err != nil || s.changed || !strings.HasSuffix(key, "/manifest") {
+		return etag, err
+	}
+	s.changed = true
+	var m manifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return "", err
+	}
+	m.Generation = "another-writer"
+	other, err := json.Marshal(m)
+	if err != nil {
+		return "", err
+	}
+	if _, err := s.Store.Put(ctx, key, other, PutOptions{IfMatch: etag}); err != nil {
+		return "", err
+	}
+	return etag, nil
+}
+
+func TestSyncBatchDetectsConcurrentManifestChange(t *testing.T) {
+	ctx := context.Background()
+	memory := &MemoryStore{}
+	for n := 0; n <= syncBatchSize; n++ {
+		if _, err := memory.Put(ctx, fmt.Sprintf("docs/%04d", n), []byte("猫"), PutOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := &interleavingManifestStore{Store: memory}
+	index, _ := Open(store, "index/")
+	if err := index.Sync(ctx, memory, "docs/"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected concurrent update conflict, got %v", err)
+	}
+	m, _, err := index.loadManifest(ctx)
+	if err != nil || m.Generation != "another-writer" {
+		t.Fatalf("concurrent update was overwritten: %+v, %v", m, err)
+	}
+}

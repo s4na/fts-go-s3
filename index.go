@@ -106,22 +106,26 @@ func (i *Index) loadManifest(ctx context.Context) (manifest, string, error) {
 }
 
 func (i *Index) publish(ctx context.Context, m manifest, etag string) error {
+	_, err := i.publishWithETag(ctx, m, etag)
+	return err
+}
+
+func (i *Index) publishWithETag(ctx context.Context, m manifest, etag string) (string, error) {
 	id, err := randomID()
 	if err != nil {
-		return err
+		return "", err
 	}
 	m.Version = manifestVersion
 	m.Generation = id
 	data, err := json.Marshal(m)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if len(data) > maxMetadataSize {
-		return errors.New("zenbun: manifest exceeds size limit")
+		return "", errors.New("zenbun: manifest exceeds size limit")
 	}
 	options := PutOptions{IfNoneMatch: etag == "", IfMatch: etag}
-	_, err = i.store.Put(ctx, i.prefix+"manifest", data, options)
-	return err
+	return i.store.Put(ctx, i.prefix+"manifest", data, options)
 }
 
 func (i *Index) writeSegment(ctx context.Context, docs map[string]indexedDocument) (segmentRef, error) {
@@ -375,6 +379,23 @@ func (i *Index) Search(ctx context.Context, query string) ([]string, error) {
 }
 
 func segmentDocuments(ctx context.Context, reader *segmentReader) (map[string]indexedDocument, error) {
+	// Both Sync and Compact need every record. Fetching once avoids two remote
+	// range reads per document while retaining the existing validation path.
+	object, err := reader.store.Get(ctx, reader.ref.Key, nil)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(object.Data)) != reader.ref.Size {
+		return nil, errors.New("zenbun: invalid segment size")
+	}
+	memory := &MemoryStore{}
+	if _, err := memory.Put(ctx, reader.ref.Key, object.Data, PutOptions{}); err != nil {
+		return nil, err
+	}
+	reader, err = openSegment(ctx, memory, reader.ref)
+	if err != nil {
+		return nil, err
+	}
 	data, found, err := reader.lookup(ctx, "a")
 	if err != nil {
 		return nil, err

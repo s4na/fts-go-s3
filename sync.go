@@ -7,10 +7,15 @@ import (
 	"strings"
 )
 
+// syncBatchSize bounds the number of changed document bodies held at once.
+const syncBatchSize = 1000
+
 // Sync mirrors every object under sourcePrefix into the index, using ETags to
 // detect changes. Existing indexed keys absent from the source are deleted.
 // It is intended for an index dedicated to one source prefix; source listing
 // and reads must be stable or externally coordinated during synchronization.
+// Large changes are published in batches: if an error occurs, prior batches
+// remain visible and a subsequent Sync can resume. Each batch uses manifest CAS.
 func (i *Index) Sync(ctx context.Context, source Store, sourcePrefix string) error {
 	if source == nil || sourcePrefix == "" {
 		return errors.New("zenbun: source and source prefix are required")
@@ -41,10 +46,32 @@ func (i *Index) Sync(ctx context.Context, source Store, sourcePrefix string) err
 		return err
 	}
 	seen := make(map[string]bool, len(objects))
-	var changes []Change
+	batch := make(map[string]indexedDocument, syncBatchSize)
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		ref, err := i.writeSegment(ctx, batch)
+		if err != nil {
+			return err
+		}
+		m.Segments = append(m.Segments, ref)
+		etag, err = i.publishWithETag(ctx, m, etag)
+		if err != nil {
+			return err
+		}
+		if etag == "" {
+			return errors.New("zenbun: manifest has no ETag")
+		}
+		batch = make(map[string]indexedDocument, syncBatchSize)
+		return nil
+	}
 	for _, info := range objects {
 		if info.ETag == "" {
 			return fmt.Errorf("zenbun: source %q has no ETag", info.Key)
+		}
+		if seen[info.Key] {
+			return fmt.Errorf("zenbun: duplicate source key %q", info.Key)
 		}
 		seen[info.Key] = true
 		old, exists := indexed[info.Key]
@@ -58,34 +85,25 @@ func (i *Index) Sync(ctx context.Context, source Store, sourcePrefix string) err
 		if obj.ETag != info.ETag {
 			return fmt.Errorf("zenbun: source %q changed during sync: %w", info.Key, ErrConflict)
 		}
-		changes = append(changes, Change{Key: info.Key, Data: obj.Data, ETag: obj.ETag})
+		if !validDocument(info.Key, obj.Data) {
+			return fmt.Errorf("zenbun: invalid UTF-8 in source %q", info.Key)
+		}
+		batch[info.Key] = indexedDocument{ETag: info.ETag, Terms: terms(string(obj.Data))}
+		if len(batch) >= syncBatchSize {
+			if err := flush(); err != nil {
+				return err
+			}
+		}
 	}
 	for key, doc := range indexed {
 		if !doc.Deleted && !seen[key] {
-			changes = append(changes, Change{Key: key, Delete: true})
-		}
-	}
-	// Apply must publish against the manifest used to compute the diff. Calling
-	// Apply directly could instead overwrite a concurrent index update.
-	if len(changes) == 0 {
-		return nil
-	}
-	docs := make(map[string]indexedDocument, len(changes))
-	for _, change := range changes {
-		if change.Delete {
-			docs[change.Key] = indexedDocument{Deleted: true}
-		} else {
-			if !validDocument(change.Key, change.Data) {
-				return fmt.Errorf("zenbun: invalid UTF-8 in source %q", change.Key)
+			batch[key] = indexedDocument{Deleted: true}
+			if len(batch) >= syncBatchSize {
+				if err := flush(); err != nil {
+					return err
+				}
 			}
-			docs[change.Key] = indexedDocument{ETag: change.ETag, Terms: terms(string(change.Data))}
 		}
 	}
-	// Publish against the version from which the diff was computed.
-	ref, err := i.writeSegment(ctx, docs)
-	if err != nil {
-		return err
-	}
-	m.Segments = append(m.Segments, ref)
-	return i.publish(ctx, m, etag)
+	return flush()
 }
