@@ -1,0 +1,67 @@
+name: Posting encoding comparison
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        count: [1000, 10000]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        with:
+          go-version: '1.26.10'
+          cache: false
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: .data/source
+          key: wiki-ja-20231101-3e1f92c-aozora-0984f7d-sm-v2
+      - name: Prepare documents
+        run: |
+          mkdir -p .data/source
+          if [ ! -s .data/source/wiki.parquet ]; then
+            curl --fail --location --retry 3 --output .data/source/wiki.part 'https://huggingface.co/datasets/wikimedia/wikipedia/resolve/3e1f92c331f318af862b87e2319ed5dc26d80f5d/20231101.ja/train-00000-of-00015.parquet'
+            mv .data/source/wiki.part .data/source/wiki.parquet
+          fi
+          python -m pip install 'pyarrow==20.0.0'
+          python scripts/prepare_data.py --parquet .data/source/wiki.parquet --count '${{ matrix.count }}' --out .data/generated
+      - name: Resolve and measure comparison dependencies
+        run: |
+          cd experiments/roaringbench
+          go mod tidy
+          go mod graph > ../../.data/roaring-mod-graph.txt
+          go list -m all > ../../.data/roaring-modules.txt
+          cp go.mod go.sum ../../.data/
+          go build -o ../../.data/roaringbench .
+          cd ../..
+          go build -o .data/indexbench ./cmd/indexbench
+          stat -c '%n %s bytes' .data/roaringbench .data/indexbench > .data/binary-sizes.txt
+      - name: Compare posting lists
+        run: |
+          .data/roaringbench --docs .data/generated/documents.jsonl --queries .data/generated/queries.json --out .data/roaring.json
+          printf '## Posting encodings: %s articles\n\n```json\n' '${{ matrix.count }}' >> "$GITHUB_STEP_SUMMARY"
+          cat .data/roaring.json >> "$GITHUB_STEP_SUMMARY"
+          printf '\n```\n\n### Binaries and comparison module graph\n\n```\n' >> "$GITHUB_STEP_SUMMARY"
+          cat .data/binary-sizes.txt .data/roaring-modules.txt >> "$GITHUB_STEP_SUMMARY"
+          printf '\n```\n' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: roaring-${{ matrix.count }}
+          path: |
+            .data/roaring.json
+            .data/roaring-mod-graph.txt
+            .data/roaring-modules.txt
+            .data/binary-sizes.txt
+            .data/go.mod
+            .data/go.sum
+          include-hidden-files: true
+          if-no-files-found: ignore
