@@ -37,8 +37,8 @@ func TestRangeLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		query string
-		want int
+		query    string
+		want     int
 		manifest *index.Manifest
 	}{{"最初", 1, &old}, {"最初", 0, nil}, {"新しい", 1, nil}} {
 		got, err := idx.Search(ctx, tc.query, tc.manifest)

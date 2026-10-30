@@ -32,10 +32,10 @@ type Span struct {
 }
 
 type Manifest struct {
-	Shards    int      `json:"shards"`
-	Documents []string `json:"documents"`
-	Active    []bool   `json:"active"`
-	Segments  []string `json:"segments"`
+	Shards    int               `json:"shards"`
+	Documents []string          `json:"documents"`
+	Active    []bool            `json:"active"`
+	Segments  []string          `json:"segments"`
 	Ranges    map[string][]Span `json:"ranges,omitempty"`
 }
 
