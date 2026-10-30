@@ -44,9 +44,11 @@ jobs:
           go list -m all > ../../.data/sdk/modules.txt
           cp go.mod go.sum ../../.data/sdk/
           go build -o ../../.data/sdk/sdkbench .
+          go build -o ../../.data/sdk/sdk-only ./cmd/size-sdk
+          go build -o ../../.data/sdk/lite-only ./cmd/size-lite
           cd ../..
           wc -l internal/s3lite/*.go > .data/sdk/s3lite-lines.txt
-          stat -c '%n %s bytes' .data/sdk/sdkbench > .data/sdk/binary.txt
+          stat -c '%n %s bytes' .data/sdk/sdk-only .data/sdk/lite-only > .data/sdk/binary.txt
       - name: Compare operations
         env:
           S3_ENDPOINT: http://localhost:8333
