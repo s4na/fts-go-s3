@@ -1,0 +1,403 @@
+package zenbun
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+	"unicode/utf8"
+)
+
+const manifestVersion = 1
+
+// Index stores immutable segments under a prefix, separate from source documents.
+type Index struct {
+	store Store
+	prefix string
+}
+
+// Open configures an index. It does not create an object until the first write.
+func Open(store Store, prefix string) (*Index, error) {
+	if store == nil || prefix == "" || !utf8.ValidString(prefix) {
+		return nil, errors.New("zenbun: store and UTF-8 prefix are required")
+	}
+	return &Index{store: store, prefix: strings.TrimRight(prefix, "/") + "/"}, nil
+}
+
+type segmentRef struct {
+	Key string `json:"key"`
+	Size int64 `json:"size"`
+	Documents int `json:"documents"`
+}
+
+type manifest struct {
+	Version int `json:"version"`
+	Generation string `json:"generation"`
+	Segments []segmentRef `json:"segments"`
+}
+
+func randomID() (string, error) {
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(id[:]), nil
+}
+
+func (i *Index) loadManifest(ctx context.Context) (manifest, string, error) {
+	obj, err := i.store.Get(ctx, i.prefix+"manifest", nil)
+	if errors.Is(err, ErrNotFound) {
+		return manifest{Version: manifestVersion}, "", nil
+	}
+	if err != nil {
+		return manifest{}, "", err
+	}
+	var m manifest
+	if len(obj.Data) > maxMetadataSize || json.Unmarshal(obj.Data, &m) != nil {
+		return manifest{}, "", errors.New("zenbun: invalid manifest")
+	}
+	if m.Version != manifestVersion {
+		return manifest{}, "", errors.New("zenbun: unsupported manifest version")
+	}
+	seen := make(map[string]bool)
+	for _, ref := range m.Segments {
+		if !strings.HasPrefix(ref.Key, i.prefix+"segments/") || strings.Contains(strings.TrimPrefix(ref.Key, i.prefix+"segments/"), "/") || ref.Size < footerSize || ref.Documents < 1 || seen[ref.Key] {
+			return manifest{}, "", errors.New("zenbun: invalid segment reference")
+		}
+		seen[ref.Key] = true
+	}
+	if obj.ETag == "" {
+		return manifest{}, "", errors.New("zenbun: manifest has no ETag")
+	}
+	return m, obj.ETag, nil
+}
+
+func (i *Index) publish(ctx context.Context, m manifest, etag string) error {
+	id, err := randomID()
+	if err != nil {
+		return err
+	}
+	m.Version = manifestVersion
+	m.Generation = id
+	data, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	options := PutOptions{IfNoneMatch: etag == "", IfMatch: etag}
+	_, err = i.store.Put(ctx, i.prefix+"manifest", data, options)
+	return err
+}
+
+func (i *Index) writeSegment(ctx context.Context, docs map[string]indexedDocument) (segmentRef, error) {
+	data, err := encodeSegment(docs)
+	if err != nil {
+		return segmentRef{}, err
+	}
+	id, err := randomID()
+	if err != nil {
+		return segmentRef{}, err
+	}
+	key := i.prefix + "segments/" + id
+	if _, err := i.store.Put(ctx, key, data, PutOptions{IfNoneMatch: true}); err != nil {
+		return segmentRef{}, err
+	}
+	return segmentRef{Key: key, Size: int64(len(data)), Documents: len(docs)}, nil
+}
+
+// Change adds or replaces a document, or deletes it when Delete is true.
+// ETag is optional source metadata used by Sync.
+type Change struct {
+	Key string
+	Data []byte
+	Delete bool
+	ETag string
+}
+
+func validDocument(key string, data []byte) bool {
+	return key != "" && utf8.ValidString(key) && utf8.Valid(data)
+}
+
+// Apply atomically publishes a batch. ErrConflict means no batch changes were
+// published; callers can reload state and retry. Duplicate keys are rejected.
+func (i *Index) Apply(ctx context.Context, changes []Change) error {
+	if len(changes) == 0 {
+		return nil
+	}
+	docs := make(map[string]indexedDocument, len(changes))
+	for _, change := range changes {
+		if change.Key == "" || !utf8.ValidString(change.Key) || !change.Delete && !utf8.Valid(change.Data) {
+			return errors.New("zenbun: document key and content must be valid UTF-8")
+		}
+		if _, exists := docs[change.Key]; exists {
+			return errors.New("zenbun: duplicate key in batch")
+		}
+		doc := indexedDocument{Deleted: change.Delete, ETag: change.ETag}
+		if !change.Delete {
+			doc.Terms = terms(string(change.Data))
+		}
+		docs[change.Key] = doc
+	}
+	m, etag, err := i.loadManifest(ctx)
+	if err != nil {
+		return err
+	}
+	ref, err := i.writeSegment(ctx, docs)
+	if err != nil {
+		return err
+	}
+	m.Segments = append(m.Segments, ref)
+	return i.publish(ctx, m, etag)
+}
+
+// RetryConflict retries a complete operation on ErrConflict. The operation must
+// reload the current state on each call. Other errors are returned unchanged.
+func RetryConflict(ctx context.Context, attempts int, operation func(context.Context) error) error {
+	if attempts < 1 || operation == nil {
+		return errors.New("zenbun: retry requires an operation and positive attempts")
+	}
+	for n := 0; n < attempts; n++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := operation(ctx)
+		if !errors.Is(err, ErrConflict) || n+1 == attempts {
+			return err
+		}
+		timer := time.NewTimer(time.Duration(1<<min(n, 6)) * 10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return ErrConflict
+}
+
+func decodeList(data []byte) ([]string, error) {
+	var keys []string
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return nil, errors.New("zenbun: invalid segment list")
+	}
+	for n, key := range keys {
+		if !utf8.ValidString(key) || n > 0 && keys[n-1] >= key {
+			return nil, errors.New("zenbun: invalid segment list order")
+		}
+	}
+	return keys, nil
+}
+
+func readDocument(ctx context.Context, reader *segmentReader, key string) (indexedDocument, bool, error) {
+	data, found, err := reader.lookup(ctx, "k"+key)
+	if err != nil || !found {
+		return indexedDocument{}, found, err
+	}
+	var doc indexedDocument
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return indexedDocument{}, false, errors.New("zenbun: invalid document record")
+	}
+	return doc, true, nil
+}
+
+// Search returns candidate document keys. It may include false positives;
+// callers should read and verify source documents when exact matches matter.
+// Empty queries are rejected; matching uses NFKC, lowercase and character grams.
+func (i *Index) Search(ctx context.Context, query string) ([]string, error) {
+	if !utf8.ValidString(query) || query == "" {
+		return nil, errors.New("zenbun: query must be nonempty UTF-8")
+	}
+	all := terms(query)
+	var queryTerms []string
+	for _, term := range all {
+		if strings.HasPrefix(term, "b") {
+			queryTerms = append(queryTerms, term)
+		}
+	}
+	if len(queryTerms) == 0 {
+		queryTerms = all
+	}
+	m, _, err := i.loadManifest(ctx)
+	if err != nil {
+		return nil, err
+	}
+	readers := make([]*segmentReader, len(m.Segments))
+	for n, ref := range m.Segments {
+		readers[n], err = openSegment(ctx, i.store, ref)
+		if err != nil {
+			return nil, err
+		}
+	}
+	result := make(map[string]bool)
+	for n := len(readers)-1; n >= 0; n-- {
+		var candidates map[string]bool
+		for _, term := range queryTerms {
+			data, found, err := readers[n].lookup(ctx, "t"+term)
+			if err != nil {
+				return nil, err
+			}
+			if !found {
+				candidates = nil
+				break
+			}
+			keys, err := decodeList(data)
+			if err != nil {
+				return nil, err
+			}
+			if candidates == nil {
+				candidates = make(map[string]bool, len(keys))
+				for _, key := range keys {
+					candidates[key] = true
+				}
+			} else {
+				present := make(map[string]bool, len(keys))
+				for _, key := range keys {
+					present[key] = true
+				}
+				for key := range candidates {
+					if !present[key] {
+						delete(candidates, key)
+					}
+				}
+			}
+		}
+		for key := range candidates {
+			shadowed := false
+			for newer := n+1; newer < len(readers); newer++ {
+				_, found, err := readDocument(ctx, readers[newer], key)
+				if err != nil {
+					return nil, err
+				}
+				if found {
+					shadowed = true
+					break
+				}
+			}
+			if !shadowed {
+				result[key] = true
+			}
+		}
+	}
+	keys := make([]string, 0, len(result))
+	for key := range result {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys, nil
+}
+
+func segmentDocuments(ctx context.Context, reader *segmentReader) (map[string]indexedDocument, error) {
+	data, found, err := reader.lookup(ctx, "a")
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, errors.New("zenbun: missing segment document list")
+	}
+	keys, err := decodeList(data)
+	if err != nil {
+		return nil, err
+	}
+	if len(keys) != reader.ref.Documents {
+		return nil, errors.New("zenbun: invalid segment document count")
+	}
+	docs := make(map[string]indexedDocument, len(keys))
+	for _, key := range keys {
+		doc, found, err := readDocument(ctx, reader, key)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, fmt.Errorf("zenbun: missing document %q", key)
+		}
+		docs[key] = doc
+	}
+	return docs, nil
+}
+
+// Compact merges one adjacent pair of similarly sized segments. It preserves
+// update order and tombstones; subsequent calls merge additional pairs.
+func (i *Index) Compact(ctx context.Context) (bool, error) {
+	m, etag, err := i.loadManifest(ctx)
+	if err != nil {
+		return false, err
+	}
+	at := -1
+	for n := 0; n+1 < len(m.Segments); n++ {
+		a, b := m.Segments[n].Documents, m.Segments[n+1].Documents
+		if a <= 2*b && b <= 2*a {
+			at = n
+			break
+		}
+	}
+	if at < 0 {
+		return false, nil
+	}
+	docs := make(map[string]indexedDocument)
+	for _, ref := range m.Segments[at:at+2] {
+		reader, err := openSegment(ctx, i.store, ref)
+		if err != nil {
+			return false, err
+		}
+		part, err := segmentDocuments(ctx, reader)
+		if err != nil {
+			return false, err
+		}
+		for key, doc := range part {
+			docs[key] = doc
+		}
+	}
+	ref, err := i.writeSegment(ctx, docs)
+	if err != nil {
+		return false, err
+	}
+	segments := make([]segmentRef, 0, len(m.Segments)-1)
+	segments = append(segments, m.Segments[:at]...)
+	segments = append(segments, ref)
+	segments = append(segments, m.Segments[at+2:]...)
+	m.Segments = segments
+	if err := i.publish(ctx, m, etag); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// Reclaim removes old unreferenced segment objects. Grace must exceed the
+// maximum reader duration plus clock skew and storage-listing delay.
+// Writers must create a new segment only after reading the manifest; the
+// conditional barrier below prevents a stale writer from publishing it.
+func (i *Index) Reclaim(ctx context.Context, grace time.Duration) (int, error) {
+	if grace <= 0 {
+		return 0, errors.New("zenbun: reclaim grace must be positive")
+	}
+	m, etag, err := i.loadManifest(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if err := i.publish(ctx, m, etag); err != nil {
+		return 0, err
+	}
+	objects, err := i.store.List(ctx, i.prefix+"segments/")
+	if err != nil {
+		return 0, err
+	}
+	live := make(map[string]bool, len(m.Segments))
+	for _, ref := range m.Segments {
+		live[ref.Key] = true
+	}
+	cutoff := time.Now().Add(-grace)
+	removed := 0
+	for _, obj := range objects {
+		if !live[obj.Key] && !obj.LastModified.IsZero() && obj.LastModified.Before(cutoff) {
+			if err := i.store.Delete(ctx, obj.Key); err != nil {
+				return removed, err
+			}
+			removed++
+		}
+	}
+	return removed, nil
+}
