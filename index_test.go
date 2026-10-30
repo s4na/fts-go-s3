@@ -449,7 +449,7 @@ func TestCompactDropsObsoleteDeletes(t *testing.T) {
 type pausedListStore struct {
 	Store
 	started chan struct{}
-	resume chan struct{}
+	resume  chan struct{}
 }
 
 func (s *pausedListStore) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
@@ -474,9 +474,15 @@ func TestReclaimDoesNotMarkConcurrentPublication(t *testing.T) {
 	result := make(chan error, 1)
 	go func() { _, err := collector.Reclaim(ctx, time.Hour); result <- err }()
 	<-paused.started
-	if err := writer.Apply(ctx, []Change{{Key: "a", Data: []byte("new")}}); err != nil { t.Fatal(err) }
+	if err := writer.Apply(ctx, []Change{{Key: "a", Data: []byte("new")}}); err != nil {
+		t.Fatal(err)
+	}
 	close(paused.resume)
-	if err := <-result; err != nil { t.Fatal(err) }
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
 	markers, err := memory.List(ctx, "index/retired/")
-	if err != nil || len(markers) != 0 { t.Fatalf("live object was marked: %v %v", markers, err) }
+	if err != nil || len(markers) != 0 {
+		t.Fatalf("live object was marked: %v %v", markers, err)
+	}
 }

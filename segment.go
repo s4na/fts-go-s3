@@ -3,7 +3,9 @@ package zenbun
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,6 +40,37 @@ type blockIndex struct {
 	First  string `json:"first"`
 	Offset int64  `json:"offset"`
 	Length int64  `json:"length"`
+}
+
+type segmentIndex struct {
+	Blocks []blockIndex `json:"blocks"`
+	Bloom []byte `json:"bloom"`
+	BloomHash string `json:"bloom_hash"`
+}
+
+func bloomPositions(key string, size int) [3]uint64 {
+	hash := sha256.Sum256([]byte(key))
+	bits := uint64(size) * 8
+	return [3]uint64{
+		binary.BigEndian.Uint64(hash[0:8]) % bits,
+		binary.BigEndian.Uint64(hash[8:16]) % bits,
+		binary.BigEndian.Uint64(hash[16:24]) % bits,
+	}
+}
+
+func bloomAdd(bloom []byte, key string) {
+	for _, bit := range bloomPositions(key, len(bloom)) {
+		bloom[bit/8] |= 1 << (bit % 8)
+	}
+}
+
+func bloomContains(bloom []byte, key string) bool {
+	for _, bit := range bloomPositions(key, len(bloom)) {
+		if bloom[bit/8] & (1 << (bit % 8)) == 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func terms(text string) []string {
@@ -122,7 +155,12 @@ func encodeSegment(docs map[string]indexedDocument) ([]byte, error) {
 		blocks = append(blocks, blockIndex{First: dict[start].Term, Offset: int64(out.Len()), Length: int64(len(data))})
 		_, _ = out.Write(data)
 	}
-	index, err := json.Marshal(blocks)
+	bloom := make([]byte, max(8, len(keys)*2))
+	for _, key := range keys {
+		bloomAdd(bloom, key)
+	}
+	sum := sha256.Sum256(bloom)
+	index, err := json.Marshal(segmentIndex{Blocks: blocks, Bloom: bloom, BloomHash: hex.EncodeToString(sum[:])})
 	if err != nil {
 		return nil, err
 	}
@@ -176,6 +214,7 @@ type segmentReader struct {
 	store       Store
 	ref         segmentRef
 	blocks      []blockIndex
+	bloom       []byte
 	indexOffset int64
 }
 
@@ -195,19 +234,27 @@ func openSegment(ctx context.Context, store Store, ref segmentRef) (*segmentRead
 	if err != nil {
 		return nil, err
 	}
-	var blocks []blockIndex
-	if err := json.Unmarshal(data, &blocks); err != nil || len(blocks) == 0 {
+	var index segmentIndex
+	if err := json.Unmarshal(data, &index); err != nil || len(index.Blocks) == 0 || len(index.Bloom) < 8 {
 		return nil, errors.New("zenbun: invalid segment index")
 	}
+	sum := sha256.Sum256(index.Bloom)
+	if hex.EncodeToString(sum[:]) != index.BloomHash {
+		return nil, errors.New("zenbun: invalid segment bloom checksum")
+	}
+	blocks := index.Blocks
 	for i, block := range blocks {
 		if !utf8.ValidString(block.First) || !validExtent(block.Offset, block.Length, offset) || block.Length > maxMetadataSize || i > 0 && blocks[i-1].First >= block.First {
 			return nil, errors.New("zenbun: invalid dictionary block")
 		}
 	}
-	return &segmentReader{store: store, ref: ref, blocks: blocks, indexOffset: offset}, nil
+	return &segmentReader{store: store, ref: ref, blocks: blocks, bloom: index.Bloom, indexOffset: offset}, nil
 }
 
 func (s *segmentReader) lookup(ctx context.Context, term string) ([]byte, bool, error) {
+	if strings.HasPrefix(term, "k") && !bloomContains(s.bloom, term[1:]) {
+		return nil, false, nil
+	}
 	index := sort.Search(len(s.blocks), func(i int) bool { return s.blocks[i].First > term }) - 1
 	if index < 0 {
 		return nil, false, nil

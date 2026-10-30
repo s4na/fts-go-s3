@@ -36,9 +36,17 @@ jobs:
         run: |
           python -m pip install 'pyarrow==20.0.0'
           python scripts/prepare-corpus.py --wiki .data/source/wiki-00000.parquet --wiki .data/source/wiki-00001.parquet --aozora .data/source/40_ruby_310.txt --aozora .data/source/45630_txt_23610.txt --count 100000 --output .data/documents.jsonl
+      - name: Start S3 storage
+        run: |
+          docker run -d --name s3 -p 8333:8333 chrislusf/seaweedfs:latest server -s3 -ip.bind=0.0.0.0
+          for i in $(seq 1 60); do
+            if curl -s -o /dev/null http://localhost:8333/; then break; fi
+            sleep 2
+          done
+          curl --fail -X PUT http://localhost:8333/zenbun-measure
       - name: Measure and validate
         run: |
-          go run ./cmd/measure --corpus .data/documents.jsonl --output .data/metrics.json
+          go run ./cmd/measure --corpus .data/documents.jsonl --batch 1000 --endpoint http://localhost:8333 --output .data/metrics.json
           printf '## 100,002-document measurement\n\n```json\n' >> "$GITHUB_STEP_SUMMARY"
           cat .data/metrics.json >> "$GITHUB_STEP_SUMMARY"
           printf '\n```\n' >> "$GITHUB_STEP_SUMMARY"

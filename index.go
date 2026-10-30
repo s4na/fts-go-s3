@@ -364,6 +364,18 @@ func (i *Index) Compact(ctx context.Context) (bool, error) {
 			break
 		}
 	}
+	// Highly unequal alternating segment sizes may leave no comparable
+	// neighbours. Bound that backlog by merging the least expensive adjacent
+	// pair when it grows beyond the normal size tiers.
+	if at < 0 && len(m.Segments) > 16 {
+		best := ^uint64(0)
+		for n := 0; n+1 < len(m.Segments); n++ {
+			cost := uint64(m.Segments[n].Size) + uint64(m.Segments[n+1].Size)
+			if cost < best {
+				at, best = n, cost
+			}
+		}
+	}
 	if at < 0 {
 		return false, nil
 	}
