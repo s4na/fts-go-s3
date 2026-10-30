@@ -1,0 +1,73 @@
+name: S3 client comparison
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        storage: [versity, seaweedfs]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        with:
+          go-version: '1.26.10'
+          cache: false
+      - name: Start Versity
+        if: matrix.storage == 'versity'
+        run: docker run -d --name s3 -p 8333:7070 -e ROOT_ACCESS_KEY=testaccess -e ROOT_SECRET_KEY=testsecret -e VGW_BACKEND=posix -e VGW_BACKEND_ARGS=/tmp ghcr.io/versity/versitygw:latest
+      - name: Start SeaweedFS
+        if: matrix.storage == 'seaweedfs'
+        run: docker run -d --name s3 -p 8333:8333 chrislusf/seaweedfs:latest server -s3 -ip.bind=0.0.0.0
+      - name: Wait for storage
+        run: |
+          for i in $(seq 1 60); do
+            if curl -s -o /dev/null http://localhost:8333/; then exit 0; fi
+            sleep 2
+          done
+          docker logs s3
+          exit 1
+      - name: Build comparison and record dependencies
+        run: |
+          mkdir -p .data/sdk
+          cd experiments/sdkbench
+          go mod tidy
+          go mod graph > ../../.data/sdk/graph.txt
+          go list -m all > ../../.data/sdk/modules.txt
+          cp go.mod go.sum ../../.data/sdk/
+          go build -o ../../.data/sdk/sdkbench .
+          cd ../..
+          wc -l internal/s3lite/*.go > .data/sdk/s3lite-lines.txt
+          stat -c '%n %s bytes' .data/sdk/sdkbench > .data/sdk/binary.txt
+      - name: Compare operations
+        env:
+          S3_ENDPOINT: http://localhost:8333
+        run: |
+          cd .data/sdk
+          ./sdkbench
+          printf '## %s SDK and s3lite\n\n```json\n' '${{ matrix.storage }}' >> "$GITHUB_STEP_SUMMARY"
+          cat sdk-results.json >> "$GITHUB_STEP_SUMMARY"
+          printf '\n```\n\n### Modules, binary and s3lite lines\n\n```\n' >> "$GITHUB_STEP_SUMMARY"
+          cat modules.txt binary.txt s3lite-lines.txt >> "$GITHUB_STEP_SUMMARY"
+          printf '\n```\n' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: sdk-${{ matrix.storage }}
+          path: |
+            .data/sdk/sdk-results.json
+            .data/sdk/graph.txt
+            .data/sdk/modules.txt
+            .data/sdk/binary.txt
+            .data/sdk/s3lite-lines.txt
+            .data/sdk/go.mod
+            .data/sdk/go.sum
+          include-hidden-files: true
+          if-no-files-found: ignore
