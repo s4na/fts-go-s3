@@ -32,9 +32,13 @@ func TestS3AddressingSigningAndRetries(t *testing.T) {
 		return &http.Response{StatusCode: status, Header: http.Header{"Etag": {"\"etag\""}}, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
 	})
 	store, err := NewS3Store(S3Config{Endpoint: "https://example.test/base", Bucket: "bucket", AccessKey: "access", SecretKey: "secret", SessionToken: "session", VirtualHost: true, HTTPClient: &http.Client{Transport: transport}})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	obj, err := store.Get(context.Background(), "a +/日", nil)
-	if err != nil || string(obj.Data) != "ok" || attempts != 3 { t.Fatalf("read retry: %+v %v attempts=%d", obj, err, attempts) }
+	if err != nil || string(obj.Data) != "ok" || attempts != 3 {
+		t.Fatalf("read retry: %+v %v attempts=%d", obj, err, attempts)
+	}
 	attempts = 0
 	_, err = store.Put(context.Background(), "a +/日", []byte("x"), PutOptions{IfNoneMatch: true})
 	var response *S3Error

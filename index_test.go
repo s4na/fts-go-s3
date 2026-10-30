@@ -490,25 +490,37 @@ func TestReclaimDoesNotMarkConcurrentPublication(t *testing.T) {
 
 func TestSegmentRejectsCorruptBloom(t *testing.T) {
 	data, err := encodeSegment(map[string]indexedDocument{"key": {Terms: terms("hello")}})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	offset, length, err := parseFooter(data[len(data)-footerSize:], int64(len(data)))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	var index segmentIndex
-	if err := json.Unmarshal(data[offset:offset+length], &index); err != nil { t.Fatal(err) }
+	if err := json.Unmarshal(data[offset:offset+length], &index); err != nil {
+		t.Fatal(err)
+	}
 	index.Bloom[0] ^= 1
 	corrupt, err := json.Marshal(index)
-	if err != nil || int64(len(corrupt)) != length { t.Fatalf("corrupt index: %v", err) }
+	if err != nil || int64(len(corrupt)) != length {
+		t.Fatalf("corrupt index: %v", err)
+	}
 	copy(data[offset:offset+length], corrupt)
 	store := &MemoryStore{}
 	ctx := context.Background()
-	if _, err := store.Put(ctx, "segment", data, PutOptions{}); err != nil { t.Fatal(err) }
-	if _, err := openSegment(ctx, store, segmentRef{Key: "segment", Size: int64(len(data)), Documents: 1}); err == nil { t.Fatal("expected checksum error") }
+	if _, err := store.Put(ctx, "segment", data, PutOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openSegment(ctx, store, segmentRef{Key: "segment", Size: int64(len(data)), Documents: 1}); err == nil {
+		t.Fatal("expected checksum error")
+	}
 }
 
 type pausedBarrierStore struct {
 	Store
 	started chan struct{}
-	resume chan struct{}
+	resume  chan struct{}
 }
 
 func (s *pausedBarrierStore) Put(ctx context.Context, key string, data []byte, options PutOptions) (string, error) {
@@ -534,9 +546,15 @@ func TestReclaimExcludesWritesAfterBarrier(t *testing.T) {
 	result := make(chan error, 1)
 	go func() { _, err := collector.Reclaim(ctx, time.Hour); result <- err }()
 	<-paused.started
-	if err := writer.Apply(ctx, []Change{{Key: "a", Data: []byte("new")}}); err != nil { t.Fatal(err) }
+	if err := writer.Apply(ctx, []Change{{Key: "a", Data: []byte("new")}}); err != nil {
+		t.Fatal(err)
+	}
 	close(paused.resume)
-	if err := <-result; err != nil { t.Fatal(err) }
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
 	markers, err := memory.List(ctx, "index/retired/")
-	if err != nil || len(markers) != 0 { t.Fatalf("new publication marked: %v %v", markers, err) }
+	if err != nil || len(markers) != 0 {
+		t.Fatalf("new publication marked: %v %v", markers, err)
+	}
 }

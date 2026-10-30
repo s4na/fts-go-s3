@@ -189,7 +189,7 @@ func (s *S3Store) sign(req *http.Request, data []byte, now time.Time) {
 
 // S3Error reports an S3 HTTP error not mapped to a Store sentinel.
 type S3Error struct {
-	Operation string
+	Operation  string
 	StatusCode int
 }
 
