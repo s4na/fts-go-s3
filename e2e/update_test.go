@@ -78,6 +78,14 @@ func TestUpdates(t *testing.T) {
 	if err != nil || len(compactManifest.Segments) != 1 {
 		t.Fatalf("compact manifest: %+v, %v", compactManifest, err)
 	}
+	if len(compactManifest.Documents) != 101 {
+		t.Fatalf("compact retained obsolete document versions: %d", len(compactManifest.Documents))
+	}
+	for _, active := range compactManifest.Active {
+		if !active {
+			t.Fatal("compact retained tombstones")
+		}
+	}
 	for _, snapshot := range []*index.Manifest{nil, &manifest, &old} {
 		query, want := "追加", 100
 		if snapshot == &old {
