@@ -17,12 +17,13 @@ import (
 )
 
 type snapshot struct {
-	Stage          string `json:"stage"`
-	Segments       int    `json:"segments"`
-	Queries        int    `json:"queries"`
-	Gets           int64  `json:"gets"`
-	ReceivedBytes  int64  `json:"received_bytes"`
-	FalseNegatives int    `json:"false_negatives"`
+	Stage             string `json:"stage"`
+	Segments          int    `json:"segments"`
+	Queries           int    `json:"queries"`
+	Gets              int64  `json:"gets"`
+	ReceivedBytes     int64  `json:"received_bytes"`
+	FalseNegatives    int    `json:"false_negatives"`
+	DeletedCandidates int    `json:"deleted_candidates"`
 }
 
 func main() {
@@ -108,6 +109,9 @@ func run() (runErr error) {
 			set := make(map[string]bool)
 			for _, id := range candidates {
 				set[id] = true
+				if _, exists := active[id]; !exists {
+					s.DeletedCandidates++
+				}
 			}
 			for _, id := range truth.Search(q) {
 				if !set[id] {
@@ -120,8 +124,8 @@ func run() (runErr error) {
 		s.Gets = after.Requests["GET"] - before.Requests["GET"]
 		s.ReceivedBytes = after.ReceivedBytes - before.ReceivedBytes
 		snapshots = append(snapshots, s)
-		if s.FalseNegatives != 0 {
-			return fmt.Errorf("%s: %d false negatives", stage, s.FalseNegatives)
+		if s.FalseNegatives != 0 || s.DeletedCandidates != 0 {
+			return fmt.Errorf("%s: %d false negatives, %d deleted candidates", stage, s.FalseNegatives, s.DeletedCandidates)
 		}
 		return nil
 	}
