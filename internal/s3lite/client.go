@@ -45,7 +45,7 @@ func (c *Client) Request(ctx context.Context, method, bucket, key string, query 
 	if key != "" {
 		base.Path += "/" + key
 	}
-	base.RawPath = ""
+	base.RawPath = s3Path(base.Path)
 	base.RawQuery = strings.ReplaceAll(query.Encode(), "+", "%20")
 	req, err := http.NewRequestWithContext(ctx, method, base.String(), bytes.NewReader(body))
 	if err != nil {
@@ -70,6 +70,22 @@ func (c *Client) Request(ctx context.Context, method, bucket, key string, query 
 		return Result{}, err
 	}
 	return Result{Status: resp.StatusCode, Header: resp.Header.Clone(), Body: data}, nil
+}
+
+func s3Path(path string) string {
+	const hexDigits = "0123456789ABCDEF"
+	var out strings.Builder
+	for i := 0; i < len(path); i++ {
+		b := path[i]
+		if b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || strings.ContainsRune("-_.~/", rune(b)) {
+			out.WriteByte(b)
+		} else {
+			out.WriteByte('%')
+			out.WriteByte(hexDigits[b>>4])
+			out.WriteByte(hexDigits[b&15])
+		}
+	}
+	return out.String()
 }
 
 func hash(data []byte) string {

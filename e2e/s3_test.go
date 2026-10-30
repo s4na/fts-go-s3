@@ -38,6 +38,13 @@ func TestStorage(t *testing.T) {
 		}
 	}
 	check(call("PUT", "", nil, ""), 200)
+	check(call("PUT", "reserved/+ =:@", nil, "encoded"), 200)
+	reserved := call("GET", "reserved/+ =:@", nil, "")
+	check(reserved, 200)
+	if string(reserved.Body) != "encoded" {
+		t.Fatalf("reserved key: %q", reserved.Body)
+	}
+	check(call("DELETE", "reserved/+ =:@", nil, ""), 204)
 	check(call("PUT", "test key/日本語", nil, "abcdef"), 200)
 	r := call("GET", "test key/日本語", http.Header{"Range": {"bytes=1-3"}}, "")
 	check(r, 206)
