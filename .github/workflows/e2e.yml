@@ -47,5 +47,7 @@ jobs:
         if: always()
         with:
           name: s3-${{ matrix.storage }}
-          path: e2e/results.json
+          path: |
+            e2e/results.json
+            e2e/update-results.json
           if-no-files-found: ignore

@@ -4,6 +4,7 @@ package index
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -27,6 +28,8 @@ type Index struct {
 type Manifest struct {
 	Shards    int      `json:"shards"`
 	Documents []string `json:"documents"`
+	Active    []bool   `json:"active"`
+	Segments  []string `json:"segments"`
 }
 
 func (i Index) object(ctx context.Context, method, key string, data []byte) (s3lite.Result, error) {
@@ -135,8 +138,13 @@ func (i Index) Build(ctx context.Context, docs []oracle.Document, count int) (Ma
 	if count < 1 {
 		return Manifest{}, fmt.Errorf("shards must be positive")
 	}
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return Manifest{}, err
+	}
+	segment := fmt.Sprintf("%x", random[:])
 	shards := make([]map[string][]uint64, count)
-	manifest := Manifest{Shards: count, Documents: make([]string, 0, len(docs))}
+	manifest := Manifest{Shards: count, Documents: make([]string, 0, len(docs)), Segments: []string{segment}}
 	seen := make(map[string]bool)
 	for index, doc := range docs {
 		if doc.ID == "" || seen[doc.ID] {
@@ -144,6 +152,7 @@ func (i Index) Build(ctx context.Context, docs []oracle.Document, count int) (Ma
 		}
 		seen[doc.ID] = true
 		manifest.Documents = append(manifest.Documents, doc.ID)
+		manifest.Active = append(manifest.Active, true)
 		for _, term := range terms(doc.Title + "\n" + doc.Text) {
 			n := shard(term, count)
 			if shards[n] == nil {
@@ -156,7 +165,7 @@ func (i Index) Build(ctx context.Context, docs []oracle.Document, count int) (Ma
 		if postings == nil {
 			continue
 		}
-		if _, err := i.object(ctx, http.MethodPut, fmt.Sprintf("shards/%d", n), encode(postings)); err != nil {
+		if _, err := i.object(ctx, http.MethodPut, fmt.Sprintf("segments/%s/shards/%d", segment, n), encode(postings)); err != nil {
 			return Manifest{}, err
 		}
 	}
@@ -164,23 +173,127 @@ func (i Index) Build(ctx context.Context, docs []oracle.Document, count int) (Ma
 	if err != nil {
 		return Manifest{}, err
 	}
-	_, err = i.object(ctx, http.MethodPut, "manifest.json", data)
-	return manifest, err
-}
-
-func (i Index) Manifest(ctx context.Context) (Manifest, error) {
-	r, err := i.object(ctx, http.MethodGet, "manifest.json", nil)
+	key := strings.Trim(i.Prefix, "/") + "/manifest.json"
+	r, err := i.S3.Request(ctx, http.MethodPut, i.Bucket, key, nil, http.Header{"If-None-Match": {"*"}}, data)
 	if err != nil {
 		return Manifest{}, err
 	}
-	var manifest Manifest
-	if err := json.Unmarshal(r.Body, &manifest); err != nil {
-		return Manifest{}, err
+	if r.Status == http.StatusPreconditionFailed || r.Status == http.StatusConflict {
+		return Manifest{}, ErrConflict
 	}
-	if manifest.Shards < 1 {
-		return Manifest{}, fmt.Errorf("invalid manifest shard count")
+	if r.Status < 200 || r.Status >= 300 {
+		return Manifest{}, fmt.Errorf("publish manifest: HTTP %d: %s", r.Status, r.Body)
 	}
 	return manifest, nil
+}
+
+func (i Index) Manifest(ctx context.Context) (Manifest, error) {
+	manifest, _, err := i.readManifest(ctx)
+	return manifest, err
+}
+
+func (i Index) readManifest(ctx context.Context) (Manifest, string, error) {
+	r, err := i.object(ctx, http.MethodGet, "manifest.json", nil)
+	if err != nil {
+		return Manifest{}, "", err
+	}
+	var manifest Manifest
+	if err := json.Unmarshal(r.Body, &manifest); err != nil {
+		return Manifest{}, "", err
+	}
+	if manifest.Shards < 1 || len(manifest.Documents) != len(manifest.Active) {
+		return Manifest{}, "", fmt.Errorf("invalid manifest")
+	}
+	if r.Header.Get("ETag") == "" {
+		return Manifest{}, "", fmt.Errorf("manifest has no ETag")
+	}
+	return manifest, r.Header.Get("ETag"), nil
+}
+
+// Update writes a fresh immutable segment and publishes a manifest with CAS.
+// A nil document deletes id. Conflicts return ErrConflict; callers may retry
+// after reloading the manifest. Unpublished segment objects are left for GC.
+var ErrConflict = fmt.Errorf("manifest changed concurrently")
+
+func (i Index) Update(ctx context.Context, id string, doc *oracle.Document) error {
+	return i.Apply(ctx, []Change{{ID: id, Document: doc}})
+}
+
+type Change struct {
+	ID       string
+	Document *oracle.Document
+}
+
+// Apply atomically publishes a batch of distinct additions, replacements, and deletions.
+func (i Index) Apply(ctx context.Context, changes []Change) error {
+	if len(changes) == 0 {
+		return fmt.Errorf("empty update")
+	}
+	manifest, etag, err := i.readManifest(ctx)
+	if err != nil {
+		return err
+	}
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return err
+	}
+	segment := fmt.Sprintf("%x", random[:])
+	postings := make(map[int]map[string][]uint64)
+	seen := make(map[string]bool)
+	for _, change := range changes {
+		id, doc := change.ID, change.Document
+		if id == "" || seen[id] || doc != nil && doc.ID != id {
+			return fmt.Errorf("invalid or duplicate document ID %q", id)
+		}
+		seen[id] = true
+		found := false
+		for n, key := range manifest.Documents {
+			if key == id && manifest.Active[n] {
+				manifest.Active[n] = false
+				found = true
+			}
+		}
+		if doc == nil && !found {
+			return fmt.Errorf("document %q does not exist", id)
+		}
+		if doc == nil {
+			continue
+		}
+		docID := uint64(len(manifest.Documents))
+		for _, term := range terms(doc.Title + "\n" + doc.Text) {
+			n := shard(term, manifest.Shards)
+			if postings[n] == nil {
+				postings[n] = make(map[string][]uint64)
+			}
+			postings[n][term] = append(postings[n][term], docID)
+		}
+		manifest.Documents = append(manifest.Documents, id)
+		manifest.Active = append(manifest.Active, true)
+	}
+	for n, posting := range postings {
+		if _, err := i.object(ctx, http.MethodPut, fmt.Sprintf("segments/%s/shards/%d", segment, n), encode(posting)); err != nil {
+			return err
+		}
+	}
+	if len(postings) > 0 {
+		manifest.Segments = append(manifest.Segments, segment)
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		return err
+	}
+	key := strings.Trim(i.Prefix, "/") + "/manifest.json"
+	r, err := i.S3.Request(ctx, http.MethodPut, i.Bucket, key, nil, http.Header{"If-Match": {etag}}, data)
+	if err != nil {
+		return err
+	}
+	if r.Status == http.StatusPreconditionFailed || r.Status == http.StatusConflict {
+		return ErrConflict
+	}
+	if r.Status < 200 || r.Status >= 300 {
+		return fmt.Errorf("publish manifest: HTTP %d: %s", r.Status, r.Body)
+	}
+	return nil
 }
 
 // Search loads each needed shard at most once and intersects postings.
@@ -200,16 +313,36 @@ func (i Index) Search(ctx context.Context, query string, cached *Manifest) ([]st
 	} else {
 		manifest = *cached
 	}
-	if manifest.Shards < 1 {
-		return nil, fmt.Errorf("invalid manifest shard count")
+	if manifest.Shards < 1 || len(manifest.Active) != len(manifest.Documents) {
+		return nil, fmt.Errorf("invalid manifest")
 	}
+	var out []string
+	for _, segment := range manifest.Segments {
+		ids, err := i.searchSegment(ctx, segment, queryTerms, manifest.Shards)
+		if err != nil {
+			return nil, err
+		}
+		for id := range ids {
+			if id >= uint64(len(manifest.Documents)) {
+				return nil, fmt.Errorf("posting references unknown document %d", id)
+			}
+			if manifest.Active[id] {
+				out = append(out, manifest.Documents[id])
+			}
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func (i Index) searchSegment(ctx context.Context, segment string, queryTerms []string, shardCount int) (map[uint64]bool, error) {
 	loaded := make(map[int]map[string][]uint64)
 	var candidates map[uint64]bool
 	for _, term := range queryTerms {
-		n := shard(term, manifest.Shards)
+		n := shard(term, shardCount)
 		postings, ok := loaded[n]
 		if !ok {
-			r, err := i.S3.Request(ctx, http.MethodGet, i.Bucket, strings.Trim(i.Prefix, "/")+fmt.Sprintf("/shards/%d", n), nil, nil, nil)
+			r, err := i.S3.Request(ctx, http.MethodGet, i.Bucket, strings.Trim(i.Prefix, "/")+fmt.Sprintf("/segments/%s/shards/%d", segment, n), nil, nil, nil)
 			if err != nil {
 				return nil, err
 			}
@@ -236,13 +369,5 @@ func (i Index) Search(ctx context.Context, query string, cached *Manifest) ([]st
 			return nil, nil
 		}
 	}
-	out := make([]string, 0, len(candidates))
-	for id := range candidates {
-		if id >= uint64(len(manifest.Documents)) {
-			return nil, fmt.Errorf("posting references unknown document %d", id)
-		}
-		out = append(out, manifest.Documents[id])
-	}
-	sort.Strings(out)
-	return out, nil
+	return candidates, nil
 }
