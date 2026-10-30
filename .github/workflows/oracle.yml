@@ -42,6 +42,7 @@ jobs:
       - name: Check recall and record metrics
         run: |
           go run ./cmd/measure --corpus .data/documents.jsonl --batch 1000 --output .data/metrics.json
+          python scripts/report-read-ratio.py .data/metrics.json >> "$GITHUB_STEP_SUMMARY"
           {
             printf '## Corpus recall and I/O metrics\n\n```json\n'
             cat .data/metrics.json
