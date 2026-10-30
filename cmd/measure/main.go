@@ -130,7 +130,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	metrics := map[string]any{"documents": len(docs), "queries": len(items), "false_negatives": 0, "search_gets": gets, "search_received_bytes": received, "gets_per_query": float64(gets) / float64(len(items)), "bytes_per_query": float64(received) / float64(len(items)), "single_update_puts": store.Puts, "manifest_bytes": len(manifest.Data), "build_seconds": buildTime.Seconds()}
+	metrics := map[string]any{"batch_size": *batch, "documents": len(docs), "queries": len(items), "false_negatives": 0, "search_gets": gets, "search_received_bytes": received, "gets_per_query": float64(gets) / float64(len(items)), "bytes_per_query": float64(received) / float64(len(items)), "single_update_puts": store.Puts, "manifest_bytes": len(manifest.Data), "build_seconds": buildTime.Seconds()}
 	encoded, err := json.MarshalIndent(metrics, "", "  ")
 	if err != nil {
 		return err
