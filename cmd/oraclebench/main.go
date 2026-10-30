@@ -75,7 +75,7 @@ func run() error {
 	payload := struct {
 		Documents     int      `json:"documents"`
 		Queries       int      `json:"queries"`
-		ElapsedMillis int64 `json:"elapsed_ms"`
+		ElapsedMillis int64    `json:"elapsed_ms"`
 		Results       []result `json:"results"`
 	}{len(docs), len(queries), time.Since(start).Milliseconds(), results}
 	data, err = json.MarshalIndent(payload, "", "  ")
