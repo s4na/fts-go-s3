@@ -2,6 +2,7 @@ name: Dataset and oracle
 on:
   pull_request:
   push:
+    branches: [main]
   workflow_dispatch:
   schedule:
     - cron: '37 18 * * 0'
