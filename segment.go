@@ -43,9 +43,9 @@ type blockIndex struct {
 }
 
 type segmentIndex struct {
-	Blocks []blockIndex `json:"blocks"`
-	Bloom []byte `json:"bloom"`
-	BloomHash string `json:"bloom_hash"`
+	Blocks    []blockIndex `json:"blocks"`
+	Bloom     []byte       `json:"bloom"`
+	BloomHash string       `json:"bloom_hash"`
 }
 
 func bloomPositions(key string, size int) [3]uint64 {
@@ -66,7 +66,7 @@ func bloomAdd(bloom []byte, key string) {
 
 func bloomContains(bloom []byte, key string) bool {
 	for _, bit := range bloomPositions(key, len(bloom)) {
-		if bloom[bit/8] & (1 << (bit % 8)) == 0 {
+		if bloom[bit/8]&(1<<(bit%8)) == 0 {
 			return false
 		}
 	}

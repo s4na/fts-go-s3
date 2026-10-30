@@ -48,12 +48,16 @@ func run() error {
 	if *endpoint != "" {
 		var err error
 		backend, err = zenbun.NewS3Store(zenbun.S3Config{Endpoint: *endpoint, Bucket: "zenbun-measure", AccessKey: "testaccess", SecretKey: "testsecret"})
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 	}
 	ctx := context.Background()
 	store := &meter{Store: backend}
 	index, err := zenbun.Open(store, "index/")
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	started := time.Now()
 	f, err := os.Open(*corpus)
 	if err != nil {
@@ -71,7 +75,9 @@ func run() error {
 		}
 		changes = append(changes, zenbun.Change{Key: doc.ID, Data: []byte(doc.Text)})
 		if len(changes) == *batch {
-			if err := index.Apply(ctx, changes); err != nil { return err }
+			if err := index.Apply(ctx, changes); err != nil {
+				return err
+			}
 			changes = nil
 			_, _ = fmt.Fprintf(os.Stderr, "indexed %d documents\n", len(docs)+1)
 		}
@@ -93,7 +99,9 @@ func run() error {
 		return fmt.Errorf("expected 178 queries, got %d", len(items))
 	}
 	if len(changes) > 0 {
-		if err := index.Apply(ctx, changes); err != nil { return err }
+		if err := index.Apply(ctx, changes); err != nil {
+			return err
+		}
 	}
 	buildTime := time.Since(started)
 	store.Gets, store.Received, store.Puts = 0, 0, 0

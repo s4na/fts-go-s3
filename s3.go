@@ -187,6 +187,16 @@ func (s *S3Store) sign(req *http.Request, data []byte, now time.Time) {
 	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential="+s.config.AccessKey+"/"+scope+", SignedHeaders="+signed+", Signature="+hex.EncodeToString(signature(key, toSign)))
 }
 
+// S3Error reports an S3 HTTP error not mapped to a Store sentinel.
+type S3Error struct {
+	Operation string
+	StatusCode int
+}
+
+func (e *S3Error) Error() string {
+	return fmt.Sprintf("s3 %s: HTTP %d", e.Operation, e.StatusCode)
+}
+
 func s3Error(operation string, status int) error {
 	switch status {
 	case http.StatusNotFound:
@@ -196,7 +206,7 @@ func s3Error(operation string, status int) error {
 	case http.StatusRequestedRangeNotSatisfiable:
 		return fmt.Errorf("s3 %s: %w", operation, ErrInvalidRange)
 	default:
-		return fmt.Errorf("s3 %s: HTTP %d", operation, status)
+		return &S3Error{Operation: operation, StatusCode: status}
 	}
 }
 

@@ -433,14 +433,14 @@ func (i *Index) Reclaim(ctx context.Context, grace time.Duration) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	// Objects created by writers that observe this barrier must not be marked
-	// from our older snapshot. The age threshold accommodates clock skew.
-	barrierStart := time.Now()
-	if err := i.publish(ctx, m, etag); err != nil {
-		return 0, err
-	}
+	// Discover before the barrier. A writer that has already created an object
+	// must publish before our CAS (which makes it fail), or its own stale CAS
+	// will fail. Writers observing the barrier cannot appear in this listing.
 	objects, err := i.store.List(ctx, i.prefix+"segments/")
 	if err != nil {
+		return 0, err
+	}
+	if err := i.publish(ctx, m, etag); err != nil {
 		return 0, err
 	}
 	markers, err := i.store.List(ctx, i.prefix+"retired/")
@@ -465,7 +465,7 @@ func (i *Index) Reclaim(ctx context.Context, grace time.Duration) (int, error) {
 		}
 		markerKey := i.prefix + "retired/" + id
 		present[markerKey] = true
-		if live[obj.Key] || obj.LastModified.IsZero() || !obj.LastModified.Before(barrierStart.Add(-grace)) {
+		if live[obj.Key] {
 			continue
 		}
 		marker, exists := markerByKey[markerKey]
