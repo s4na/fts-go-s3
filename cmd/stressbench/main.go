@@ -37,6 +37,7 @@ func run() (runErr error) {
 	docsPath := flag.String("docs", "", "input JSONL")
 	singles := flag.Int("singles", 1000, "individual updates")
 	batches := flag.Int("batches", 10, "100-document batches")
+	compactEvery := flag.Int("compact-every", 0, "compact after this many individual updates; zero means only at end")
 	output := flag.String("out", "stress.json", "output JSON")
 	flag.Parse()
 	f, err := os.Open(*docsPath)
@@ -134,6 +135,8 @@ func run() (runErr error) {
 	}
 	before := meter.Snapshot()
 	start := time.Now()
+	var periodicGets, periodicPuts, periodicBytes int64
+	var periodicCompactions int
 	for n := 0; n < *singles; n++ {
 		original := base[n%len(base)]
 		_, exists := active[original.ID]
@@ -156,6 +159,20 @@ func run() (runErr error) {
 		}
 		if n+1 == 10 || n+1 == 100 || n+1 == *singles {
 			if err := check(fmt.Sprintf("single-%d", n+1)); err != nil {
+				return err
+			}
+		}
+		if *compactEvery > 0 && (n+1)%*compactEvery == 0 {
+			pre := meter.Snapshot()
+			if err := idx.Compact(ctx); err != nil {
+				return err
+			}
+			post := meter.Snapshot()
+			periodicGets += post.Requests["GET"] - pre.Requests["GET"]
+			periodicPuts += post.Requests["PUT"] - pre.Requests["PUT"]
+			periodicBytes += post.SentBytes - pre.SentBytes
+			periodicCompactions++
+			if err := check(fmt.Sprintf("periodic-compact-%d", n+1)); err != nil {
 				return err
 			}
 		}
@@ -187,8 +204,12 @@ func run() (runErr error) {
 	}
 	payload := map[string]interface{}{
 		"singles":           *singles,
-		"single_puts":       afterSingles.Requests["PUT"] - before.Requests["PUT"],
-		"single_sent_bytes": afterSingles.SentBytes - before.SentBytes,
+		"single_puts":       afterSingles.Requests["PUT"] - before.Requests["PUT"] - periodicPuts,
+		"single_sent_bytes": afterSingles.SentBytes - before.SentBytes - periodicBytes,
+		"periodic_compactions": periodicCompactions,
+		"periodic_compact_gets": periodicGets,
+		"periodic_compact_puts": periodicPuts,
+		"periodic_compact_sent_bytes": periodicBytes,
 		"batches":           *batches,
 		"batch_documents":   100,
 		"batch_puts":        afterBatches.Requests["PUT"] - afterSingles.Requests["PUT"],
