@@ -39,6 +39,7 @@ jobs:
           mkdir -p .data/sdk
           cd experiments/sdkbench
           go mod tidy
+          git diff --exit-code -- go.mod go.sum
           go mod graph > ../../.data/sdk/graph.txt
           go list -m all > ../../.data/sdk/modules.txt
           cp go.mod go.sum ../../.data/sdk/

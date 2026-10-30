@@ -37,8 +37,8 @@ func run() error {
 		Credentials: aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
 			return aws.Credentials{AccessKeyID: "testaccess", SecretAccessKey: "testsecret"}, nil
 		}),
-		HTTPClient: &http.Client{Transport: sdkMeter, Timeout: 10 * time.Second},
-		RetryMaxAttempts: 1,
+		HTTPClient:                 &http.Client{Transport: sdkMeter, Timeout: 10 * time.Second},
+		RetryMaxAttempts:           1,
 		RequestChecksumCalculation: aws.RequestChecksumCalculationWhenRequired,
 	}, func(o *s3.Options) { o.BaseEndpoint = aws.String(endpoint); o.UsePathStyle = true })
 	bucket := "sdk-compare"
@@ -107,11 +107,11 @@ func run() error {
 	}
 	sdkMillis := time.Since(start).Milliseconds()
 	resultJSON := map[string]interface{}{
-		"lite_including_bucket": liteCounts,
-		"sdk": sdkMeter.Snapshot(),
-		"lite_ms": liteMillis,
-		"sdk_ms": sdkMillis,
-		"conditional_status": 412,
+		"lite_including_bucket":      liteCounts,
+		"sdk":                        sdkMeter.Snapshot(),
+		"lite_ms":                    liteMillis,
+		"sdk_ms":                     sdkMillis,
+		"conditional_status":         412,
 		"body_bytes_exclude_headers": true,
 	}
 	data, err := json.MarshalIndent(resultJSON, "", "  ")
