@@ -79,6 +79,16 @@ def main():
         add("rare", ranked[-1][0])
     for kind, query in [("single", "猫"), ("mixed", "ABC-123"), ("width", "ＡＢＣ１２３"), ("no_hit", "𪛖𪛖𪛖𪛖𪛖𪛖")]:
         add(kind, query)
+    # Lowercasing can create sequences that NFKC changes on a second pass.
+    # A substring taken from normalized text is therefore not always itself
+    # normalized. Keep positive cases only if their actual query normalization
+    # is found in the oracle-normalized source documents.
+    normalized_queries = normalize_all([q["query"] for q in queries])
+    positives = {"title", "substring", "frequent", "rare"}
+    queries = [q for q, normalized_query in zip(queries, normalized_queries)
+               if q["kind"] not in positives or any(normalized_query in text for text in normalized_combined)]
+    if not positives.issubset({q["kind"] for q in queries}):
+        raise RuntimeError("missing positive query category after normalization")
     (out / "queries.json").write_text(json.dumps(queries, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"wrote {count} Wikipedia documents and {len(args.aozora)} Aozora works; {len(queries)} queries")
 
