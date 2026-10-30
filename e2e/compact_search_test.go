@@ -16,11 +16,11 @@ import (
 )
 
 type searchGate struct {
-	base http.RoundTripper
+	base    http.RoundTripper
 	segment string
 	started chan struct{}
 	release chan struct{}
-	once sync.Once
+	once    sync.Once
 }
 
 func (g *searchGate) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -79,12 +79,14 @@ func TestSearchDuringCompaction(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
+	start := time.Now()
 	if err := idx.Compact(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if deleted, err := idx.Reclaim(ctx, index.ReadLease+index.ClockSkewAllowance); err != nil || deleted != 0 {
 		t.Fatalf("reclaimed during active search: %d %v", deleted, err)
 	}
+	elapsed := time.Since(start).Milliseconds()
 	close(gate.release)
 	released = true
 	select {
@@ -94,5 +96,16 @@ func TestSearchDuringCompaction(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal(fmt.Errorf("search did not finish: %w", ctx.Err()))
+	}
+	if summary := os.Getenv("GITHUB_STEP_SUMMARY"); summary != "" {
+		f, err := os.OpenFile(summary, os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, writeErr := fmt.Fprintf(f, "## %s search during compaction\n\n1 paused search succeeded; compaction and early-reclaim check: %d ms.\n", os.Getenv("STORAGE"), elapsed)
+		closeErr := f.Close()
+		if writeErr != nil || closeErr != nil {
+			t.Fatalf("write summary: %v, close: %v", writeErr, closeErr)
+		}
 	}
 }
