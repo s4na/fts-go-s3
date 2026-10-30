@@ -67,9 +67,5 @@ jobs:
           persist-credentials: false
       - name: Install GitHub Actions lockfile tool
         run: gh extension install github/gh-actions-lock --pin v0.2.0
-      - name: Generate lockfile
-        run: |
-          gh actions-lock --no-narrow --no-interactive
-          printf 'LOCKFILE_BASE64='
-          base64 -w 0 .github/workflows/actions.lock
-          printf '\n'
+      - name: Verify workflow lockfile
+        run: gh actions-lock --verify --no-narrow
