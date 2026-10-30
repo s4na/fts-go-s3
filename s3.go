@@ -22,17 +22,17 @@ import (
 // omitted, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN are
 // read from the environment. Endpoint must contain a scheme and host.
 type S3Config struct {
-	Endpoint, Bucket, Region string
+	Endpoint, Bucket, Region           string
 	AccessKey, SecretKey, SessionToken string
-	VirtualHost bool
-	HTTPClient *http.Client
+	VirtualHost                        bool
+	HTTPClient                         *http.Client
 }
 
 // S3Store implements Store using the S3 API and Signature Version 4.
 type S3Store struct {
-	config S3Config
+	config   S3Config
 	endpoint *url.URL
-	client *http.Client
+	client   *http.Client
 }
 
 func NewS3Store(config S3Config) (*S3Store, error) {
@@ -275,16 +275,16 @@ func (s *S3Store) List(ctx context.Context, prefix string) ([]ObjectInfo, error)
 		var page struct {
 			Contents []struct {
 				Key, ETag, LastModified string
-				Size int64
+				Size                    int64
 			} `xml:"Contents"`
-			Truncated bool `xml:"IsTruncated"`
-			Next string `xml:"NextContinuationToken"`
+			Truncated bool   `xml:"IsTruncated"`
+			Next      string `xml:"NextContinuationToken"`
 		}
 		if err := xml.Unmarshal(body, &page); err != nil {
 			return nil, fmt.Errorf("s3 list: %w", err)
 		}
 		for _, item := range page.Contents {
-			key, err := url.PathUnescape(item.Key)
+			key, err := url.QueryUnescape(item.Key)
 			if err != nil {
 				return nil, fmt.Errorf("s3 list key: %w", err)
 			}

@@ -1,0 +1,714 @@
+[
+  {
+    "kind": "title",
+    "query": "アンパサンド"
+  },
+  {
+    "kind": "title",
+    "query": "言語"
+  },
+  {
+    "kind": "title",
+    "query": "日本語"
+  },
+  {
+    "kind": "title",
+    "query": "地理学"
+  },
+  {
+    "kind": "title",
+    "query": "EU (曖昧さ回避)"
+  },
+  {
+    "kind": "title",
+    "query": "国の一覧"
+  },
+  {
+    "kind": "title",
+    "query": "パリ"
+  },
+  {
+    "kind": "title",
+    "query": "ヨーロッパ"
+  },
+  {
+    "kind": "title",
+    "query": "生物"
+  },
+  {
+    "kind": "title",
+    "query": "コケ植物"
+  },
+  {
+    "kind": "title",
+    "query": "社会学"
+  },
+  {
+    "kind": "title",
+    "query": "古代エジプト"
+  },
+  {
+    "kind": "title",
+    "query": "エジプト"
+  },
+  {
+    "kind": "title",
+    "query": "著作権の保護期間"
+  },
+  {
+    "kind": "title",
+    "query": "台東区"
+  },
+  {
+    "kind": "title",
+    "query": "地理"
+  },
+  {
+    "kind": "title",
+    "query": "生物学"
+  },
+  {
+    "kind": "title",
+    "query": "社会"
+  },
+  {
+    "kind": "title",
+    "query": "こどもの文化"
+  },
+  {
+    "kind": "title",
+    "query": "特撮"
+  },
+  {
+    "kind": "substring",
+    "query": " t"
+  },
+  {
+    "kind": "substring",
+    "query": " th' "
+  },
+  {
+    "kind": "substring",
+    "query": " th' alpha"
+  },
+  {
+    "kind": "substring",
+    "query": "難し"
+  },
+  {
+    "kind": "substring",
+    "query": "難しい。こ"
+  },
+  {
+    "kind": "substring",
+    "query": "難しい。これはある人"
+  },
+  {
+    "kind": "substring",
+    "query": "謙譲"
+  },
+  {
+    "kind": "substring",
+    "query": "謙譲語は「"
+  },
+  {
+    "kind": "substring",
+    "query": "謙譲語は「申し上げる"
+  },
+  {
+    "kind": "substring",
+    "query": "れて"
+  },
+  {
+    "kind": "substring",
+    "query": "れている。"
+  },
+  {
+    "kind": "substring",
+    "query": "れている。都市地理学"
+  },
+  {
+    "kind": "substring",
+    "query": "ジョ"
+  },
+  {
+    "kind": "substring",
+    "query": "ジョージア"
+  },
+  {
+    "kind": "substring",
+    "query": "ジョージア州アトラン"
+  },
+  {
+    "kind": "substring",
+    "query": "連合"
+  },
+  {
+    "kind": "substring",
+    "query": "連合総会オ"
+  },
+  {
+    "kind": "substring",
+    "query": "連合総会オブザーバー"
+  },
+  {
+    "kind": "substring",
+    "query": "て代"
+  },
+  {
+    "kind": "substring",
+    "query": "て代表者と"
+  },
+  {
+    "kind": "substring",
+    "query": "て代表者としての機能"
+  },
+  {
+    "kind": "substring",
+    "query": "を持"
+  },
+  {
+    "kind": "substring",
+    "query": "を持ってい"
+  },
+  {
+    "kind": "substring",
+    "query": "を持っていた。\n\n以"
+  },
+  {
+    "kind": "substring",
+    "query": "分子"
+  },
+  {
+    "kind": "substring",
+    "query": "分子状)酸"
+  },
+  {
+    "kind": "substring",
+    "query": "分子状)酸素の放出、"
+  },
+  {
+    "kind": "substring",
+    "query": "形質"
+  },
+  {
+    "kind": "substring",
+    "query": "形質につい"
+  },
+  {
+    "kind": "substring",
+    "query": "形質についてはそれぞ"
+  },
+  {
+    "kind": "substring",
+    "query": "、社"
+  },
+  {
+    "kind": "substring",
+    "query": "、社会学者"
+  },
+  {
+    "kind": "substring",
+    "query": "、社会学者の中でも不"
+  },
+  {
+    "kind": "substring",
+    "query": "ンド"
+  },
+  {
+    "kind": "substring",
+    "query": "ンドロス3"
+  },
+  {
+    "kind": "substring",
+    "query": "ンドロス3世がエジプ"
+  },
+  {
+    "kind": "substring",
+    "query": "十戒"
+  },
+  {
+    "kind": "substring",
+    "query": "十戒を授か"
+  },
+  {
+    "kind": "substring",
+    "query": "十戒を授かったといわ"
+  },
+  {
+    "kind": "substring",
+    "query": "法第"
+  },
+  {
+    "kind": "substring",
+    "query": "法第57条"
+  },
+  {
+    "kind": "substring",
+    "query": "法第57条第1項。著"
+  },
+  {
+    "kind": "substring",
+    "query": "永六"
+  },
+  {
+    "kind": "substring",
+    "query": "永六輔と数"
+  },
+  {
+    "kind": "substring",
+    "query": "永六輔と数回の対話集"
+  },
+  {
+    "kind": "substring",
+    "query": "てい"
+  },
+  {
+    "kind": "substring",
+    "query": "ている。\n"
+  },
+  {
+    "kind": "substring",
+    "query": "ている。\n\n関連項目"
+  },
+  {
+    "kind": "substring",
+    "query": "安定"
+  },
+  {
+    "kind": "substring",
+    "query": "安定して維"
+  },
+  {
+    "kind": "substring",
+    "query": "安定して維持する\n "
+  },
+  {
+    "kind": "substring",
+    "query": "され"
+  },
+  {
+    "kind": "substring",
+    "query": "されている"
+  },
+  {
+    "kind": "substring",
+    "query": "されていると考えるこ"
+  },
+  {
+    "kind": "substring",
+    "query": "資材"
+  },
+  {
+    "kind": "substring",
+    "query": "資材置き場"
+  },
+  {
+    "kind": "substring",
+    "query": "資材置き場)、基地作"
+  },
+  {
+    "kind": "substring",
+    "query": "真一"
+  },
+  {
+    "kind": "substring",
+    "query": "真一は器械"
+  },
+  {
+    "kind": "substring",
+    "query": "真一は器械体操で培っ"
+  },
+  {
+    "kind": "substring",
+    "query": "か、"
+  },
+  {
+    "kind": "substring",
+    "query": "か、人類は"
+  },
+  {
+    "kind": "substring",
+    "query": "か、人類は日々どのよ"
+  },
+  {
+    "kind": "substring",
+    "query": "。ま"
+  },
+  {
+    "kind": "substring",
+    "query": "。また電子"
+  },
+  {
+    "kind": "substring",
+    "query": "。また電子情報通信学"
+  },
+  {
+    "kind": "substring",
+    "query": "る。"
+  },
+  {
+    "kind": "substring",
+    "query": "る。\n\nモ"
+  },
+  {
+    "kind": "substring",
+    "query": "る。\n\nモデル理論に"
+  },
+  {
+    "kind": "substring",
+    "query": " と"
+  },
+  {
+    "kind": "substring",
+    "query": " と p "
+  },
+  {
+    "kind": "substring",
+    "query": " と p の連結 \n"
+  },
+  {
+    "kind": "substring",
+    "query": "シャ"
+  },
+  {
+    "kind": "substring",
+    "query": "シャッフル"
+  },
+  {
+    "kind": "substring",
+    "query": "シャッフル」をふたつ"
+  },
+  {
+    "kind": "substring",
+    "query": "定せ"
+  },
+  {
+    "kind": "substring",
+    "query": "定せよ」つ"
+  },
+  {
+    "kind": "substring",
+    "query": "定せよ」つまり  と"
+  },
+  {
+    "kind": "substring",
+    "query": "義的"
+  },
+  {
+    "kind": "substring",
+    "query": "義的であり"
+  },
+  {
+    "kind": "substring",
+    "query": "義的であり、形式言語"
+  },
+  {
+    "kind": "substring",
+    "query": "ータ"
+  },
+  {
+    "kind": "substring",
+    "query": "ータでは全"
+  },
+  {
+    "kind": "substring",
+    "query": "ータでは全てのデータ"
+  },
+  {
+    "kind": "substring",
+    "query": "カー"
+  },
+  {
+    "kind": "substring",
+    "query": "カーツワイ"
+  },
+  {
+    "kind": "substring",
+    "query": "カーツワイルは著作で"
+  },
+  {
+    "kind": "substring",
+    "query": "党・"
+  },
+  {
+    "kind": "substring",
+    "query": "党・第2党"
+  },
+  {
+    "kind": "substring",
+    "query": "党・第2党の関係は変"
+  },
+  {
+    "kind": "substring",
+    "query": "が、"
+  },
+  {
+    "kind": "substring",
+    "query": "が、以下の"
+  },
+  {
+    "kind": "substring",
+    "query": "が、以下のような未解"
+  },
+  {
+    "kind": "substring",
+    "query": "福祉"
+  },
+  {
+    "kind": "substring",
+    "query": "福祉社会学"
+  },
+  {
+    "kind": "substring",
+    "query": "福祉社会学、家族社会"
+  },
+  {
+    "kind": "substring",
+    "query": "は牛"
+  },
+  {
+    "kind": "substring",
+    "query": "は牛乳とレ"
+  },
+  {
+    "kind": "substring",
+    "query": "は牛乳とレンネット("
+  },
+  {
+    "kind": "substring",
+    "query": "える"
+  },
+  {
+    "kind": "substring",
+    "query": "える人間の"
+  },
+  {
+    "kind": "substring",
+    "query": "える人間の有限な精神"
+  },
+  {
+    "kind": "substring",
+    "query": "端導"
+  },
+  {
+    "kind": "substring",
+    "query": "端導出での"
+  },
+  {
+    "kind": "substring",
+    "query": "端導出での導出過程は"
+  },
+  {
+    "kind": "substring",
+    "query": "存在"
+  },
+  {
+    "kind": "substring",
+    "query": "存在であり"
+  },
+  {
+    "kind": "substring",
+    "query": "存在であり、またフラ"
+  },
+  {
+    "kind": "substring",
+    "query": "には"
+  },
+  {
+    "kind": "substring",
+    "query": "にはラテン"
+  },
+  {
+    "kind": "substring",
+    "query": "にはラテン語と同様の"
+  },
+  {
+    "kind": "substring",
+    "query": "デミ"
+  },
+  {
+    "kind": "substring",
+    "query": "デミーでは"
+  },
+  {
+    "kind": "substring",
+    "query": "デミーでは、日本語の"
+  },
+  {
+    "kind": "substring",
+    "query": "仰、"
+  },
+  {
+    "kind": "substring",
+    "query": "仰、原始宗"
+  },
+  {
+    "kind": "substring",
+    "query": "仰、原始宗教の比較研"
+  },
+  {
+    "kind": "substring",
+    "query": "2人"
+  },
+  {
+    "kind": "substring",
+    "query": "2人 + "
+  },
+  {
+    "kind": "substring",
+    "query": "2人 + ベーシスト"
+  },
+  {
+    "kind": "substring",
+    "query": "が豊"
+  },
+  {
+    "kind": "substring",
+    "query": "が豊富。\n"
+  },
+  {
+    "kind": "substring",
+    "query": "が豊富。\n スラウェ"
+  },
+  {
+    "kind": "substring",
+    "query": "かれ"
+  },
+  {
+    "kind": "substring",
+    "query": "かれる。\n"
+  },
+  {
+    "kind": "substring",
+    "query": "かれる。\n バグダー"
+  },
+  {
+    "kind": "substring",
+    "query": "って"
+  },
+  {
+    "kind": "substring",
+    "query": "っているが"
+  },
+  {
+    "kind": "substring",
+    "query": "っているが、その内容"
+  },
+  {
+    "kind": "substring",
+    "query": "ない"
+  },
+  {
+    "kind": "substring",
+    "query": "ない結果。"
+  },
+  {
+    "kind": "substring",
+    "query": "ない結果。\n 同着 "
+  },
+  {
+    "kind": "substring",
+    "query": "km"
+  },
+  {
+    "kind": "substring",
+    "query": "kmのジェ"
+  },
+  {
+    "kind": "substring",
+    "query": "kmのジェリド湖(塩"
+  },
+  {
+    "kind": "substring",
+    "query": "、貴"
+  },
+  {
+    "kind": "substring",
+    "query": "、貴重な外"
+  },
+  {
+    "kind": "substring",
+    "query": "、貴重な外貨収入源と"
+  },
+  {
+    "kind": "substring",
+    "query": "ーチ"
+  },
+  {
+    "kind": "substring",
+    "query": "ーチン政権"
+  },
+  {
+    "kind": "substring",
+    "query": "ーチン政権、シロヴィ"
+  },
+  {
+    "kind": "substring",
+    "query": "う。"
+  },
+  {
+    "kind": "substring",
+    "query": "う。その上"
+  },
+  {
+    "kind": "substring",
+    "query": "う。その上でカントは"
+  },
+  {
+    "kind": "substring",
+    "query": "プラ"
+  },
+  {
+    "kind": "substring",
+    "query": "プランテー"
+  },
+  {
+    "kind": "substring",
+    "query": "プランテーション・ソ"
+  },
+  {
+    "kind": "substring",
+    "query": "ジウ"
+  },
+  {
+    "kind": "substring",
+    "query": "ジウスが熱"
+  },
+  {
+    "kind": "substring",
+    "query": "ジウスが熱力学第一法"
+  },
+  {
+    "kind": "aozora",
+    "query": "\n「そんな人のやうに"
+  },
+  {
+    "kind": "aozora",
+    "query": "「朿ヲ」はママ]負ヒ"
+  },
+  {
+    "kind": "frequent",
+    "query": "\n\n"
+  },
+  {
+    "kind": "rare",
+    "query": "︎("
+  },
+  {
+    "kind": "single",
+    "query": "猫"
+  },
+  {
+    "kind": "mixed",
+    "query": "ABC-123"
+  },
+  {
+    "kind": "width",
+    "query": "ＡＢＣ１２３"
+  },
+  {
+    "kind": "no_hit",
+    "query": "𪛖𪛖𪛖𪛖𪛖𪛖"
+  }
+]

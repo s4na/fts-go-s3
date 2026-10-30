@@ -105,8 +105,8 @@ func TestFailedPublishPreservesSnapshot(t *testing.T) {
 
 type barrierStore struct {
 	Store
-	mu sync.Mutex
-	wait int
+	mu    sync.Mutex
+	wait  int
 	ready chan struct{}
 }
 
@@ -152,25 +152,48 @@ func TestSync(t *testing.T) {
 	ctx := context.Background()
 	store := &MemoryStore{}
 	index, _ := Open(store, "index/")
-	if _, err := store.Put(ctx, "docs/a", []byte("猫"), PutOptions{}); err != nil { t.Fatal(err) }
-	if err := index.Sync(ctx, store, "docs/"); err != nil { t.Fatal(err) }
+	if _, err := store.Put(ctx, "docs/a", []byte("猫"), PutOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := index.Sync(ctx, store, "docs/"); err != nil {
+		t.Fatal(err)
+	}
 	assertOracle(t, index, map[string]string{"docs/a": "猫"}, []string{"猫"})
-	if _, err := store.Put(ctx, "docs/a", []byte("犬"), PutOptions{}); err != nil { t.Fatal(err) }
-	if err := index.Sync(ctx, store, "docs/"); err != nil { t.Fatal(err) }
+	if _, err := store.Put(ctx, "docs/a", []byte("犬"), PutOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := index.Sync(ctx, store, "docs/"); err != nil {
+		t.Fatal(err)
+	}
 	assertOracle(t, index, map[string]string{"docs/a": "犬"}, []string{"犬"})
-	if err := store.Delete(ctx, "docs/a"); err != nil { t.Fatal(err) }
-	if err := index.Sync(ctx, store, "docs/"); err != nil { t.Fatal(err) }
+	if err := store.Delete(ctx, "docs/a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := index.Sync(ctx, store, "docs/"); err != nil {
+		t.Fatal(err)
+	}
 	keys, err := index.Search(ctx, "犬")
-	if err != nil || len(keys) != 0 { t.Fatalf("after delete: %v, %v", keys, err) }
+	if err != nil || len(keys) != 0 {
+		t.Fatalf("after delete: %v, %v", keys, err)
+	}
 }
 
 func TestReclaim(t *testing.T) {
 	ctx := context.Background()
 	store := &MemoryStore{}
 	index, _ := Open(store, "index/")
-	if err := index.Apply(ctx, []Change{{Key: "a", Data: []byte("cat")}}); err != nil { t.Fatal(err) }
-	if err := index.Apply(ctx, []Change{{Key: "b", Data: []byte("dog")}}); err != nil { t.Fatal(err) }
-	if _, err := index.Compact(ctx); err != nil { t.Fatal(err) }
+	if err := index.Apply(ctx, []Change{{Key: "a", Data: []byte("cat")}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := index.Apply(ctx, []Change{{Key: "b", Data: []byte("dog")}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := index.Compact(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := index.Reclaim(ctx, time.Minute); err != nil || n != 0 {
+		t.Fatalf("first pass must only mark: %d, %v", n, err)
+	}
 	store.mu.Lock()
 	for key, obj := range store.objects {
 		obj.time = time.Now().Add(-time.Hour)
@@ -178,7 +201,9 @@ func TestReclaim(t *testing.T) {
 	}
 	store.mu.Unlock()
 	n, err := index.Reclaim(ctx, time.Minute)
-	if err != nil || n != 2 { t.Fatalf("reclaim: %d, %v", n, err) }
+	if err != nil || n != 2 {
+		t.Fatalf("reclaim: %d, %v", n, err)
+	}
 	assertOracle(t, index, map[string]string{"a": "cat", "b": "dog"}, []string{"cat", "dog"})
 }
 
@@ -199,4 +224,62 @@ func FuzzManifest(f *testing.F) {
 		index, _ := Open(store, "index")
 		_, _, _ = index.loadManifest(context.Background())
 	})
+}
+
+type pausedReadStore struct {
+	Store
+	mu sync.Mutex
+	pause bool
+	started chan struct{}
+	resume chan struct{}
+}
+
+func (s *pausedReadStore) Get(ctx context.Context, key string, r *ByteRange) (Object, error) {
+	if r != nil {
+		s.mu.Lock()
+		wait := s.pause
+		if wait {
+			s.pause = false
+			close(s.started)
+		}
+		s.mu.Unlock()
+		if wait {
+			select {
+			case <-s.resume:
+			case <-ctx.Done():
+				return Object{}, ctx.Err()
+			}
+		}
+	}
+	return s.Store.Get(ctx, key, r)
+}
+
+func TestReclaimProtectsReaderAfterCompaction(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	memory := &MemoryStore{}
+	store := &pausedReadStore{Store: memory, started: make(chan struct{}), resume: make(chan struct{})}
+	index, _ := Open(store, "index")
+	if err := index.Apply(ctx, []Change{{Key: "a", Data: []byte("cat")}}); err != nil { t.Fatal(err) }
+	if err := index.Apply(ctx, []Change{{Key: "b", Data: []byte("dog")}}); err != nil { t.Fatal(err) }
+	memory.mu.Lock()
+	for key, obj := range memory.objects {
+		obj.time = time.Now().Add(-time.Hour)
+		memory.objects[key] = obj
+	}
+	memory.mu.Unlock()
+	store.mu.Lock()
+	store.pause = true
+	store.mu.Unlock()
+	result := make(chan error, 1)
+	go func() {
+		keys, err := index.Search(ctx, "cat")
+		if err == nil && (len(keys) != 1 || keys[0] != "a") { err = fmt.Errorf("unexpected keys %v", keys) }
+		result <- err
+	}()
+	<-store.started
+	if changed, err := index.Compact(ctx); err != nil || !changed { t.Fatalf("compact: %v %v", changed, err) }
+	if removed, err := index.Reclaim(ctx, time.Minute); err != nil || removed != 0 { t.Fatalf("first reclaim: %d %v", removed, err) }
+	close(store.resume)
+	if err := <-result; err != nil { t.Fatal(err) }
 }

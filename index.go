@@ -17,7 +17,7 @@ const manifestVersion = 1
 
 // Index stores immutable segments under a prefix, separate from source documents.
 type Index struct {
-	store Store
+	store  Store
 	prefix string
 }
 
@@ -30,15 +30,15 @@ func Open(store Store, prefix string) (*Index, error) {
 }
 
 type segmentRef struct {
-	Key string `json:"key"`
-	Size int64 `json:"size"`
-	Documents int `json:"documents"`
+	Key       string `json:"key"`
+	Size      int64  `json:"size"`
+	Documents int    `json:"documents"`
 }
 
 type manifest struct {
-	Version int `json:"version"`
-	Generation string `json:"generation"`
-	Segments []segmentRef `json:"segments"`
+	Version    int          `json:"version"`
+	Generation string       `json:"generation"`
+	Segments   []segmentRef `json:"segments"`
 }
 
 func randomID() (string, error) {
@@ -88,6 +88,9 @@ func (i *Index) publish(ctx context.Context, m manifest, etag string) error {
 	if err != nil {
 		return err
 	}
+	if len(data) > maxMetadataSize {
+		return errors.New("zenbun: manifest exceeds size limit")
+	}
 	options := PutOptions{IfNoneMatch: etag == "", IfMatch: etag}
 	_, err = i.store.Put(ctx, i.prefix+"manifest", data, options)
 	return err
@@ -112,10 +115,10 @@ func (i *Index) writeSegment(ctx context.Context, docs map[string]indexedDocumen
 // Change adds or replaces a document, or deletes it when Delete is true.
 // ETag is optional source metadata used by Sync.
 type Change struct {
-	Key string
-	Data []byte
+	Key    string
+	Data   []byte
 	Delete bool
-	ETag string
+	ETag   string
 }
 
 func validDocument(key string, data []byte) bool {
@@ -233,7 +236,7 @@ func (i *Index) Search(ctx context.Context, query string) ([]string, error) {
 		}
 	}
 	result := make(map[string]bool)
-	for n := len(readers)-1; n >= 0; n-- {
+	for n := len(readers) - 1; n >= 0; n-- {
 		var candidates map[string]bool
 		for _, term := range queryTerms {
 			data, found, err := readers[n].lookup(ctx, "t"+term)
@@ -267,7 +270,7 @@ func (i *Index) Search(ctx context.Context, query string) ([]string, error) {
 		}
 		for key := range candidates {
 			shadowed := false
-			for newer := n+1; newer < len(readers); newer++ {
+			for newer := n + 1; newer < len(readers); newer++ {
 				_, found, err := readDocument(ctx, readers[newer], key)
 				if err != nil {
 					return nil, err
@@ -329,7 +332,7 @@ func (i *Index) Compact(ctx context.Context) (bool, error) {
 	at := -1
 	for n := 0; n+1 < len(m.Segments); n++ {
 		a, b := m.Segments[n].Documents, m.Segments[n+1].Documents
-		if a <= 2*b && b <= 2*a {
+		if a <= b && b-a <= a || b < a && a-b <= b {
 			at = n
 			break
 		}
@@ -338,7 +341,7 @@ func (i *Index) Compact(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	docs := make(map[string]indexedDocument)
-	for _, ref := range m.Segments[at:at+2] {
+	for _, ref := range m.Segments[at : at+2] {
 		reader, err := openSegment(ctx, i.store, ref)
 		if err != nil {
 			return false, err
@@ -366,10 +369,12 @@ func (i *Index) Compact(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// Reclaim removes old unreferenced segment objects. Grace must exceed the
+// Reclaim discovers unreferenced segments and deletes them only after a later
+// call observes a retirement marker older than grace. Grace must exceed the
 // maximum reader duration plus clock skew and storage-listing delay.
-// Writers must create a new segment only after reading the manifest; the
-// conditional barrier below prevents a stale writer from publishing it.
+// The conditional manifest barrier prevents stale writers from publishing
+// objects discovered during reclamation. Storage must provide strong listing
+// and conditional-write consistency.
 func (i *Index) Reclaim(ctx context.Context, grace time.Duration) (int, error) {
 	if grace <= 0 {
 		return 0, errors.New("zenbun: reclaim grace must be positive")
@@ -385,18 +390,54 @@ func (i *Index) Reclaim(ctx context.Context, grace time.Duration) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	markers, err := i.store.List(ctx, i.prefix+"retired/")
+	if err != nil {
+		return 0, err
+	}
 	live := make(map[string]bool, len(m.Segments))
 	for _, ref := range m.Segments {
 		live[ref.Key] = true
 	}
+	markerByKey := make(map[string]ObjectInfo, len(markers))
+	for _, marker := range markers {
+		markerByKey[marker.Key] = marker
+	}
+	present := make(map[string]bool, len(objects))
 	cutoff := time.Now().Add(-grace)
 	removed := 0
 	for _, obj := range objects {
-		if !live[obj.Key] && !obj.LastModified.IsZero() && obj.LastModified.Before(cutoff) {
+		id := strings.TrimPrefix(obj.Key, i.prefix+"segments/")
+		if id == "" || strings.Contains(id, "/") {
+			continue
+		}
+		markerKey := i.prefix + "retired/" + id
+		present[markerKey] = true
+		if live[obj.Key] {
+			continue
+		}
+		marker, exists := markerByKey[markerKey]
+		if !exists {
+			_, err := i.store.Put(ctx, markerKey, []byte(obj.Key), PutOptions{IfNoneMatch: true})
+			if err != nil && !errors.Is(err, ErrConflict) {
+				return removed, err
+			}
+			continue
+		}
+		if !marker.LastModified.IsZero() && marker.LastModified.Before(cutoff) {
 			if err := i.store.Delete(ctx, obj.Key); err != nil {
 				return removed, err
 			}
 			removed++
+			if err := i.store.Delete(ctx, markerKey); err != nil {
+				return removed, err
+			}
+		}
+	}
+	for _, marker := range markers {
+		if !present[marker.Key] && !marker.LastModified.IsZero() && marker.LastModified.Before(cutoff) {
+			if err := i.store.Delete(ctx, marker.Key); err != nil {
+				return removed, err
+			}
 		}
 	}
 	return removed, nil

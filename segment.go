@@ -23,21 +23,21 @@ const maxMetadataSize = 64 << 20
 var segmentMagic = [8]byte{'Z', 'E', 'N', 'B', 'U', 'N', '0', '1'}
 
 type indexedDocument struct {
-	Deleted bool `json:"deleted,omitempty"`
-	Terms []string `json:"terms,omitempty"`
-	ETag string `json:"etag,omitempty"`
+	Deleted bool     `json:"deleted,omitempty"`
+	Terms   []string `json:"terms,omitempty"`
+	ETag    string   `json:"etag,omitempty"`
 }
 
 type dictionaryEntry struct {
-	Term string `json:"term"`
-	Offset int64 `json:"offset"`
-	Length int64 `json:"length"`
+	Term   string `json:"term"`
+	Offset int64  `json:"offset"`
+	Length int64  `json:"length"`
 }
 
 type blockIndex struct {
-	First string `json:"first"`
-	Offset int64 `json:"offset"`
-	Length int64 `json:"length"`
+	First  string `json:"first"`
+	Offset int64  `json:"offset"`
+	Length int64  `json:"length"`
 }
 
 func terms(text string) []string {
@@ -100,6 +100,9 @@ func encodeSegment(docs map[string]indexedDocument) ([]byte, error) {
 	dict := make([]dictionaryEntry, 0, len(names))
 	for _, name := range names {
 		data := entries[name]
+		if len(data) > maxMetadataSize {
+			return nil, errors.New("zenbun: segment entry exceeds size limit")
+		}
 		dict = append(dict, dictionaryEntry{Term: name, Offset: int64(out.Len()), Length: int64(len(data))})
 		_, _ = out.Write(data)
 	}
@@ -113,12 +116,18 @@ func encodeSegment(docs map[string]indexedDocument) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+		if len(data) > maxMetadataSize {
+			return nil, errors.New("zenbun: dictionary block exceeds size limit")
+		}
 		blocks = append(blocks, blockIndex{First: dict[start].Term, Offset: int64(out.Len()), Length: int64(len(data))})
 		_, _ = out.Write(data)
 	}
 	index, err := json.Marshal(blocks)
 	if err != nil {
 		return nil, err
+	}
+	if len(index) > maxMetadataSize {
+		return nil, errors.New("zenbun: segment index exceeds size limit")
 	}
 	indexOffset := out.Len()
 	_, _ = out.Write(index)
@@ -153,7 +162,7 @@ func readRange(ctx context.Context, store Store, key string, start, length int64
 	if !validExtent(start, length, int64(^uint64(0)>>1)) {
 		return nil, errors.New("zenbun: invalid segment extent")
 	}
-	obj, err := store.Get(ctx, key, &ByteRange{Start: start, End: start+length})
+	obj, err := store.Get(ctx, key, &ByteRange{Start: start, End: start + length})
 	if err != nil {
 		return nil, err
 	}
@@ -164,9 +173,9 @@ func readRange(ctx context.Context, store Store, key string, start, length int64
 }
 
 type segmentReader struct {
-	store Store
-	ref segmentRef
-	blocks []blockIndex
+	store       Store
+	ref         segmentRef
+	blocks      []blockIndex
 	indexOffset int64
 }
 
@@ -213,7 +222,7 @@ func (s *segmentReader) lookup(ctx context.Context, term string) ([]byte, bool, 
 		return nil, false, errors.New("zenbun: invalid dictionary")
 	}
 	for i, entry := range entries {
-		if !utf8.ValidString(entry.Term) || !validExtent(entry.Offset, entry.Length, s.indexOffset) || i > 0 && entries[i-1].Term >= entry.Term {
+		if !utf8.ValidString(entry.Term) || !validExtent(entry.Offset, entry.Length, s.indexOffset) || entry.Length > maxMetadataSize || i > 0 && entries[i-1].Term >= entry.Term {
 			return nil, false, errors.New("zenbun: invalid dictionary entry")
 		}
 	}
