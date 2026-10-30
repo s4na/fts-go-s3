@@ -23,7 +23,7 @@ def normalize_all(texts):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--parquet", required=True)
+    parser.add_argument("--parquet", required=True, action="append")
     parser.add_argument("--aozora", action="append", default=[])
     parser.add_argument("--count", type=int, required=True)
     parser.add_argument("--out", required=True)
@@ -32,17 +32,20 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     samples = []
     count = 0
-    source = pq.ParquetFile(args.parquet)
     with (out / "documents.jsonl").open("w", encoding="utf-8") as f:
-        for batch in source.iter_batches(batch_size=1024, columns=["id", "title", "text"]):
-            for row in batch.to_pylist():
+        for path in args.parquet:
+            source = pq.ParquetFile(path)
+            for batch in source.iter_batches(batch_size=1024, columns=["id", "title", "text"]):
+                for row in batch.to_pylist():
+                    if count == args.count:
+                        break
+                    doc = {"id": "wiki:" + str(row["id"]), "title": row["title"], "text": row["text"]}
+                    f.write(json.dumps(doc, ensure_ascii=False) + "\n")
+                    if count < 200:
+                        samples.append(doc)
+                    count += 1
                 if count == args.count:
                     break
-                doc = {"id": "wiki:" + str(row["id"]), "title": row["title"], "text": row["text"]}
-                f.write(json.dumps(doc, ensure_ascii=False) + "\n")
-                if count < 200:
-                    samples.append(doc)
-                count += 1
             if count == args.count:
                 break
         if count != args.count:
