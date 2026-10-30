@@ -64,7 +64,7 @@ jobs:
           exit 1
       - name: Configure Toxiproxy
         run: |
-          docker run -d --name proxy --network host ghcr.io/shopify/toxiproxy:2.12.0@sha256:5ab4b4e8f476fd5452eb9584a608dd7cf8c11135878a8f7953722a9fcb9b3d87
+          docker run -d --name proxy --network host --platform linux/amd64 ghcr.io/shopify/toxiproxy:2.12.0
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8474/version; then break; fi
             sleep 1
