@@ -183,14 +183,14 @@ func run() error {
 		}
 	}
 	payload := map[string]interface{}{
-		"documents": len(docs),
-		"list_pages": pages,
-		"source_upload": difference(afterUpload, beforeUpload),
-		"source_list_and_read": difference(afterRead, afterUpload),
-		"index_build": difference(afterBuild, afterRead),
+		"documents":               len(docs),
+		"list_pages":              pages,
+		"source_upload":           difference(afterUpload, beforeUpload),
+		"source_list_and_read":    difference(afterRead, afterUpload),
+		"index_build":             difference(afterBuild, afterRead),
 		"source_and_index_update": difference(afterUpdate, afterBuild),
-		"queries": 4,
-		"false_negatives": missed,
+		"queries":                 4,
+		"false_negatives":         missed,
 	}
 	data, err = json.MarshalIndent(payload, "", "  ")
 	if err != nil {
