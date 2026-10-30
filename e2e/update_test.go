@@ -70,12 +70,12 @@ func TestUpdates(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := map[string]interface{}{
-		"single_puts": single.Requests["PUT"] - before.Requests["PUT"],
+		"single_puts":            single.Requests["PUT"] - before.Requests["PUT"],
 		"single_sent_body_bytes": single.SentBytes - before.SentBytes,
-		"batch_documents": len(batch),
-		"batch_puts": afterBatch.Requests["PUT"] - beforeBatch.Requests["PUT"],
-		"batch_sent_body_bytes": afterBatch.SentBytes - beforeBatch.SentBytes,
-		"segments_after_batch": len(manifest.Segments),
+		"batch_documents":        len(batch),
+		"batch_puts":             afterBatch.Requests["PUT"] - beforeBatch.Requests["PUT"],
+		"batch_sent_body_bytes":  afterBatch.SentBytes - beforeBatch.SentBytes,
+		"segments_after_batch":   len(manifest.Segments),
 	}
 	data, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
