@@ -25,13 +25,17 @@ jobs:
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: .data/source
-          key: wiki-ja-20231101-3e1f92c-aozora-0984f7d-v1
+          key: wiki-ja-20231101-3e1f92c-aozora-0984f7d-${{ matrix.count == 100000 && 'l' || 'sm' }}-v2
       - name: Download sources
         run: |
           mkdir -p .data/source
           if [ ! -s .data/source/wiki.parquet ]; then
             curl --fail --location --retry 3 --output .data/source/wiki.part 'https://huggingface.co/datasets/wikimedia/wikipedia/resolve/3e1f92c331f318af862b87e2319ed5dc26d80f5d/20231101.ja/train-00000-of-00015.parquet'
             mv .data/source/wiki.part .data/source/wiki.parquet
+          fi
+          if [ '${{ matrix.count }}' = 100000 ] && [ ! -s .data/source/wiki-1.parquet ]; then
+            curl --fail --location --retry 3 --output .data/source/wiki-1.part 'https://huggingface.co/datasets/wikimedia/wikipedia/resolve/3e1f92c331f318af862b87e2319ed5dc26d80f5d/20231101.ja/train-00001-of-00015.parquet'
+            mv .data/source/wiki-1.part .data/source/wiki-1.parquet
           fi
           for name in 40_ruby_310 45630_txt_23610; do
             if [ "$name" = 40_ruby_310 ]; then author=000879; else author=000081; fi
@@ -40,7 +44,9 @@ jobs:
       - name: Convert dataset
         run: |
           python -m pip install 'pyarrow==20.0.0'
-          python scripts/prepare_data.py --parquet .data/source/wiki.parquet --aozora .data/source/40_ruby_310.txt --aozora .data/source/45630_txt_23610.txt --count '${{ matrix.count }}' --out .data/generated
+          extra=()
+          if [ '${{ matrix.count }}' = 100000 ]; then extra=(--parquet .data/source/wiki-1.parquet); fi
+          python scripts/prepare_data.py --parquet .data/source/wiki.parquet "${extra[@]}" --aozora .data/source/40_ruby_310.txt --aozora .data/source/45630_txt_23610.txt --count '${{ matrix.count }}' --out .data/generated
       - name: Run oracle
         run: |
           go run ./cmd/oraclebench --docs .data/generated/documents.jsonl --queries .data/generated/queries.json --out .data/results.json | tee .data/summary.txt
