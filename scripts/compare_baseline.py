@@ -8,8 +8,8 @@ import sys
 def main():
     baseline = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
     current = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
-    for key in ("documents", "shards", "layout", "bloom"):
-        if baseline.get(key) != current.get(key):
+    for key in ("documents", "shards", "layout", "bloom", "documents_sha256", "queries_sha256"):
+        if key not in baseline or key not in current or baseline[key] != current[key]:
             raise ValueError(f"incompatible {key}: {baseline.get(key)!r} != {current.get(key)!r}")
     print("| Metric | main | Current | Difference |")
     print("|---|---:|---:|---:|")

@@ -11,6 +11,7 @@ class CompareBaselineTest(unittest.TestCase):
         metrics = {"queries": 2, "requests": 5, "received_body_bytes": 100,
                    "false_negatives": 0, "false_positives": 1, "p50_ms": 3, "p95_ms": 8}
         baseline = {"documents": 1002, "shards": 256, "layout": "shards", "bloom": False,
+                    "documents_sha256": "docs-hash", "queries_sha256": "queries-hash",
                     "uncached": metrics, "cached_manifest": dict(metrics)}
         current = json.loads(json.dumps(baseline))
         current["uncached"]["requests"] = 7

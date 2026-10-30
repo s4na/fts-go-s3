@@ -4,9 +4,11 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"sort"
@@ -57,7 +59,8 @@ func run() error {
 	}
 	defer func() { _ = f.Close() }()
 	var docs []oracle.Document
-	scanner := bufio.NewScanner(f)
+	docHash := sha256.New()
+	scanner := bufio.NewScanner(io.TeeReader(f, docHash))
 	scanner.Buffer(make([]byte, 4096), 64*1024*1024)
 	for scanner.Scan() {
 		var doc oracle.Document
@@ -73,6 +76,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	queryHash := sha256.Sum256(data)
 	var queries []query
 	if err := json.Unmarshal(data, &queries); err != nil {
 		return err
@@ -158,15 +162,17 @@ func run() error {
 		return err
 	}
 	payload := struct {
-		Documents   int           `json:"documents"`
-		Shards      int           `json:"shards"`
-		Layout      string        `json:"layout"`
-		Bloom       bool          `json:"bloom"`
-		BuildMillis int64         `json:"build_ms"`
-		Build       s3lite.Counts `json:"build_including_bucket"`
-		Uncached    stats         `json:"uncached"`
-		Cached      stats         `json:"cached_manifest"`
-	}{len(docs), *count, *layout, *useBloom, buildMillis, build, uncached, cached}
+		Documents    int           `json:"documents"`
+		Shards       int           `json:"shards"`
+		Layout       string        `json:"layout"`
+		Bloom        bool          `json:"bloom"`
+		DocumentsSHA string        `json:"documents_sha256"`
+		QueriesSHA   string        `json:"queries_sha256"`
+		BuildMillis  int64         `json:"build_ms"`
+		Build        s3lite.Counts `json:"build_including_bucket"`
+		Uncached     stats         `json:"uncached"`
+		Cached       stats         `json:"cached_manifest"`
+	}{len(docs), *count, *layout, *useBloom, fmt.Sprintf("%x", docHash.Sum(nil)), fmt.Sprintf("%x", queryHash), buildMillis, build, uncached, cached}
 	data, err = json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return err
