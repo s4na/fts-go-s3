@@ -10,7 +10,7 @@ import (
 // Normalize applies the same NFKC normalization and case folding to both
 // documents and queries. Unicode lowercasing is used, rather than full folding.
 func Normalize(s string) string {
-	return strings.ToLower(norm.NFKC.String(s))
+	return norm.NFKC.String(strings.ToLower(norm.NFKC.String(s)))
 }
 
 type Tokenizer interface {

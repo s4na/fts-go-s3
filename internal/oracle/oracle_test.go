@@ -33,3 +33,14 @@ func TestBigram(t *testing.T) {
 		t.Fatalf("single rune = %v", got)
 	}
 }
+
+func TestNormalizationAfterLowercase(t *testing.T) {
+	normalized := tokenize.Normalize("J\u030c")
+	if normalized != "ǰ" || tokenize.Normalize(normalized) != normalized {
+		t.Fatalf("normalization is not stable: %q", normalized)
+	}
+	corpus := New([]Document{{ID: "j", Text: "J\u030c"}})
+	if got := corpus.Search("ǰ"); !reflect.DeepEqual(got, []string{"j"}) {
+		t.Fatalf("equivalent query = %v", got)
+	}
+}
