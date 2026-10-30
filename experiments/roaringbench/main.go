@@ -43,9 +43,6 @@ func run() error {
 	if err := json.Unmarshal(queryData, &queries); err != nil {
 		return err
 	}
-	if len(queries) > 50 {
-		queries = queries[:50]
-	}
 	termsSet := map[string]bool{}
 	for _, q := range queries {
 		for _, term := range (tokenize.Bigram{}).Tokens(q.Query) {
