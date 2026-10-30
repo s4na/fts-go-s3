@@ -776,3 +776,61 @@ func TestSearchReadsSegmentsInParallel(t *testing.T) {
 		t.Fatalf("expected bounded parallel segment reads, peak = %d", peak)
 	}
 }
+
+func TestSyncPrefixUsesStoreStringMatching(t *testing.T) {
+	ctx := context.Background()
+	store := &MemoryStore{}
+	index, err := Open(store, "docs-index/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := index.Sync(ctx, store, "doc"); err == nil {
+		t.Fatal("doc also matches docs-index/ and must be rejected")
+	}
+	if err := index.Sync(ctx, store, "doc/"); err != nil {
+		t.Fatalf("doc/ and docs-index/ are disjoint: %v", err)
+	}
+}
+
+type reclaimConflictStore struct {
+	Store
+	conflicts int
+	attempts  int
+}
+
+func (s *reclaimConflictStore) Put(ctx context.Context, key string, data []byte, options PutOptions) (string, error) {
+	if strings.HasSuffix(key, "/manifest") && s.conflicts > 0 {
+		s.attempts++
+		s.conflicts--
+		return "", ErrConflict
+	}
+	if strings.HasSuffix(key, "/manifest") {
+		s.attempts++
+	}
+	return s.Store.Put(ctx, key, data, options)
+}
+
+func TestReclaimConflictRetriesAreBounded(t *testing.T) {
+	ctx := context.Background()
+	store := &reclaimConflictStore{Store: &MemoryStore{}}
+	index, _ := Open(store, "index/")
+	if err := index.Apply(ctx, []Change{{Key: "doc", Data: []byte("猫")}}); err != nil {
+		t.Fatal(err)
+	}
+	store.attempts, store.conflicts = 0, 2
+	err := RetryConflict(ctx, 3, func(ctx context.Context) error {
+		_, err := index.Reclaim(ctx, time.Hour)
+		return err
+	})
+	if err != nil || store.attempts != 3 {
+		t.Fatalf("two transient conflicts: attempts=%d error=%v", store.attempts, err)
+	}
+	store.attempts, store.conflicts = 0, 3
+	err = RetryConflict(ctx, 3, func(ctx context.Context) error {
+		_, err := index.Reclaim(ctx, time.Hour)
+		return err
+	})
+	if !errors.Is(err, ErrConflict) || store.attempts != 3 {
+		t.Fatalf("persistent conflicts: attempts=%d error=%v", store.attempts, err)
+	}
+}

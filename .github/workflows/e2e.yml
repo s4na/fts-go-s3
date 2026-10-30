@@ -23,10 +23,14 @@ jobs:
           cache: false
       - name: Start VersityGW
         if: matrix.storage == 'versity'
-        run: docker run -d --name s3 -p 8333:7070 -e ROOT_ACCESS_KEY=testaccess -e ROOT_SECRET_KEY=testsecret -e VGW_BACKEND=posix -e VGW_BACKEND_ARGS=/tmp ghcr.io/versity/versitygw:latest
+        run: |
+          docker build -t zenbun-ci-versity .github/ci/versity
+          docker run -d --name s3 -p 8333:7070 -e ROOT_ACCESS_KEY=testaccess -e ROOT_SECRET_KEY=testsecret -e VGW_BACKEND=posix -e VGW_BACKEND_ARGS=/tmp zenbun-ci-versity
       - name: Start SeaweedFS
         if: matrix.storage == 'seaweedfs'
-        run: docker run -d --name s3 -p 8333:8333 chrislusf/seaweedfs:latest server -s3 -ip.bind=0.0.0.0
+        run: |
+          docker build -t zenbun-ci-seaweedfs .github/ci/seaweedfs
+          docker run -d --name s3 -p 8333:8333 zenbun-ci-seaweedfs server -s3 -ip.bind=0.0.0.0
       - name: Wait for storage
         run: |
           for ((i=0; i<60; i++)); do
