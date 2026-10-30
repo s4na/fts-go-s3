@@ -94,7 +94,13 @@ func TestStorage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer f.Close()
-		_, _ = fmt.Fprintf(f, "## %s S3 compatibility\n\n```json\n%s\n```\n", strings.ToUpper(os.Getenv("STORAGE")), data)
+		_, writeErr := fmt.Fprintf(f, "## %s S3 compatibility\n\n```json\n%s\n```\n", strings.ToUpper(os.Getenv("STORAGE")), data)
+		closeErr := f.Close()
+		if writeErr != nil {
+			t.Fatal(writeErr)
+		}
+		if closeErr != nil {
+			t.Fatal(closeErr)
+		}
 	}
 }

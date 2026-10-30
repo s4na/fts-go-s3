@@ -64,7 +64,7 @@ func (c *Client) Request(ctx context.Context, method, bucket, key string, query 
 	if err != nil {
 		return Result{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return Result{}, err
