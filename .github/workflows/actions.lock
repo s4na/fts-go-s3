@@ -4,27 +4,27 @@
 version: 'v0.0.3'
 workflows:
     '.github/workflows/ci.yml':
-        - 'actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683'
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32'
         - 'golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a'
         - 'zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b'
     '.github/workflows/e2e.yml':
-        - 'actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683'
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32'
     '.github/workflows/oracle.yml':
-        - 'actions/cache@5a3ec84eff668545956fd18022155c47e93e2684'
-        - 'actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683'
+        - 'actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9'
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32'
-        - 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'
+        - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
 dependencies:
-    'actions/cache@5a3ec84eff668545956fd18022155c47e93e2684':
-        ref: 'v4.2.3'
-        commit: 'sha1-5a3ec84eff668545956fd18022155c47e93e2684'
+    'actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9':
+        ref: 'v6.1.0'
+        commit: 'sha1-55cc8345863c7cc4c66a329aec7e433d2d1c52a9'
         owner_id: 44036562
         repo_id: 215566462
-    'actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683':
-        ref: 'v4.2.2'
-        commit: 'sha1-11bd71901bbe5b1630ceea73d27597364c9af683'
+    'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1':
+        ref: 'v7.0.1'
+        commit: 'sha1-3d3c42e5aac5ba805825da76410c181273ba90b1'
         owner_id: 44036562
         repo_id: 197814629
     'actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32':
@@ -32,9 +32,9 @@ dependencies:
         commit: 'sha1-0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32'
         owner_id: 44036562
         repo_id: 192624594
-    'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02':
-        ref: 'v4.6.2'
-        commit: 'sha1-ea165f8d65b6e75b540449e92b4886f43607fa02'
+    'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9':
+        ref: 'v7.0.2'
+        commit: 'sha1-cf430e030ddbb5b0abf93d22962f4752f3646cd9'
         owner_id: 44036562
         repo_id: 192625955
     'github/codeql-action@24c54180a607b1449ed407dd24f251e4e9147c8d':
