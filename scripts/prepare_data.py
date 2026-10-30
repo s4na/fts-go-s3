@@ -15,7 +15,7 @@ def normalize_all(texts):
         ["go", "run", "./cmd/normalize"], input=payload, text=True,
         stdout=subprocess.PIPE, check=True,
     )
-    values = [json.loads(line) for line in result.stdout.splitlines()]
+    values = [json.loads(line) for line in result.stdout.split("\n") if line]
     if len(values) != len(texts):
         raise RuntimeError("normalizer returned the wrong number of strings")
     return values
@@ -54,8 +54,8 @@ def main():
             samples.append(doc)
     # U+0130 differs between Python's full lowercase mapping and Go's simple
     # mapping. Check the actual cross-language path before generating queries.
-    normalized = normalize_all(["aaaaaİbbbbb"] + [doc["text"] for doc in samples] + [doc["title"] + "\n" + doc["text"] for doc in samples[:200]])
-    if normalized[0] != "aaaaaibbbbb":
+    normalized = normalize_all(["aaaaaİbbbbb\u0085x"] + [doc["text"] for doc in samples] + [doc["title"] + "\n" + doc["text"] for doc in samples[:200]])
+    if normalized[0] != "aaaaaibbbbb\u0085x":
         raise RuntimeError("Go normalization regression")
     normalized_text = normalized[1:1 + len(samples)]
     normalized_combined = normalized[1 + len(samples):]
