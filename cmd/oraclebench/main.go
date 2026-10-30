@@ -64,7 +64,7 @@ func run() error {
 	results := make([]result, 0, len(queries))
 	for _, q := range queries {
 		ids := corpus.Search(q.Query)
-		if (q.Kind == "title" || q.Kind == "substring" || q.Kind == "frequent" || q.Kind == "rare") && len(ids) == 0 {
+		if (q.Kind == "title" || q.Kind == "substring" || q.Kind == "frequent" || q.Kind == "rare" || q.Kind == "aozora") && len(ids) == 0 {
 			return fmt.Errorf("expected at least one hit for %s %q", q.Kind, q.Query)
 		}
 		if q.Kind == "no_hit" && len(ids) != 0 {
