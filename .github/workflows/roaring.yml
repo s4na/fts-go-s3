@@ -37,6 +37,7 @@ jobs:
         run: |
           cd experiments/roaringbench
           go mod tidy
+          git diff --exit-code -- go.mod go.sum
           go mod graph > ../../.data/roaring-mod-graph.txt
           go list -m all > ../../.data/roaring-modules.txt
           cp go.mod go.sum ../../.data/

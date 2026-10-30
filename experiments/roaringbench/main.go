@@ -134,14 +134,14 @@ func run() error {
 		roaringBytes += encoded.Len()
 	}
 	result := map[string]interface{}{
-		"documents": documents,
-		"query_count": len(queries),
-		"term_count": len(terms),
-		"posting_entries": cardinality,
+		"documents":          documents,
+		"query_count":        len(queries),
+		"term_count":         len(terms),
+		"posting_entries":    cardinality,
 		"delta_varint_bytes": deltaBytes,
-		"roaring_bytes": roaringBytes,
-		"delta_encode_ns": deltaNanos,
-		"roaring_encode_ns": roaringNanos,
+		"roaring_bytes":      roaringBytes,
+		"delta_encode_ns":    deltaNanos,
+		"roaring_encode_ns":  roaringNanos,
 	}
 	out, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
