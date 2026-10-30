@@ -7,14 +7,14 @@ import (
 )
 
 type Counts struct {
-	Requests map[string]int64 `json:"requests"`
-	SentBytes int64 `json:"sent_body_bytes"`
-	ReceivedBytes int64 `json:"received_body_bytes"`
+	Requests      map[string]int64 `json:"requests"`
+	SentBytes     int64            `json:"sent_body_bytes"`
+	ReceivedBytes int64            `json:"received_body_bytes"`
 }
 
 type Meter struct {
-	Base http.RoundTripper
-	mu sync.Mutex
+	Base   http.RoundTripper
+	mu     sync.Mutex
 	counts Counts
 }
 

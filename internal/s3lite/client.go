@@ -18,17 +18,17 @@ import (
 )
 
 type Client struct {
-	Endpoint string
+	Endpoint  string
 	AccessKey string
 	SecretKey string
-	Region string
-	HTTP *http.Client
+	Region    string
+	HTTP      *http.Client
 }
 
 type Result struct {
 	Status int
 	Header http.Header
-	Body []byte
+	Body   []byte
 }
 
 // Request sends a signed, path-style S3 request. Non-2xx status codes are
@@ -128,9 +128,11 @@ func (c *Client) sign(req *http.Request, body []byte, now time.Time) {
 
 // ListPage exposes continuation tokens; callers must follow them until empty.
 type ListPage struct {
-	Contents []struct { Key string `xml:"Key"` } `xml:"Contents"`
-	Next string `xml:"NextContinuationToken"`
-	Truncated bool `xml:"IsTruncated"`
+	Contents []struct {
+		Key string `xml:"Key"`
+	} `xml:"Contents"`
+	Next      string `xml:"NextContinuationToken"`
+	Truncated bool   `xml:"IsTruncated"`
 }
 
 func (c *Client) List(ctx context.Context, bucket, prefix, token string) (ListPage, error) {

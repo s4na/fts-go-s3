@@ -55,7 +55,10 @@ func TestStorage(t *testing.T) {
 		t.Fatalf("list: %+v, %v", page, err)
 	}
 	results := map[string]interface{}{}
-	for _, tc := range []struct { name string; header http.Header }{
+	for _, tc := range []struct {
+		name   string
+		header http.Header
+	}{
 		{"if_none_match", http.Header{"If-None-Match": {"*"}}},
 		{"if_match_stale", http.Header{"If-Match": {"\"definitely-stale\""}}},
 	} {
