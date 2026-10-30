@@ -32,7 +32,7 @@ func main() {
 	}
 }
 
-func run() error {
+func run() (runErr error) {
 	docsPath := flag.String("docs", "", "input JSONL")
 	singles := flag.Int("singles", 1000, "individual updates")
 	batches := flag.Int("batches", 10, "100-document batches")
@@ -76,6 +76,18 @@ func run() error {
 		return err
 	}
 	var snapshots []snapshot
+	defer func() {
+		if runErr == nil {
+			return
+		}
+		data, err := json.MarshalIndent(map[string]interface{}{"error": runErr.Error(), "snapshots": snapshots}, "", "  ")
+		if err == nil {
+			err = os.WriteFile(*output, data, 0644)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "write failure report:", err)
+		}
+	}()
 	check := func(stage string) error {
 		manifest, err := idx.Manifest(ctx)
 		if err != nil {

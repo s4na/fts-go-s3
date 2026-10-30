@@ -60,6 +60,10 @@ jobs:
             batches=10
           fi
           go run ./cmd/stressbench --docs .data/generated/documents.jsonl --singles "$singles" --batches "$batches" --out .data/stress.json
+      - name: Publish measurements
+        if: always()
+        run: |
+          if [ ! -f .data/stress.json ]; then exit 0; fi
           printf '## %s repeated updates\n\n```json\n' '${{ matrix.storage }}' >> "$GITHUB_STEP_SUMMARY"
           cat .data/stress.json >> "$GITHUB_STEP_SUMMARY"
           printf '\n```\n' >> "$GITHUB_STEP_SUMMARY"
