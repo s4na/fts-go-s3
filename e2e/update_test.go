@@ -69,6 +69,25 @@ func TestUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	beforeCompact := meter.Snapshot()
+	if err := idx.Compact(ctx); err != nil {
+		t.Fatal(err)
+	}
+	afterCompact := meter.Snapshot()
+	compactManifest, err := idx.Manifest(ctx)
+	if err != nil || len(compactManifest.Segments) != 1 {
+		t.Fatalf("compact manifest: %+v, %v", compactManifest, err)
+	}
+	for _, snapshot := range []*index.Manifest{nil, &manifest, &old} {
+		query, want := "追加", 100
+		if snapshot == &old {
+			query, want = "古い", 1
+		}
+		got, err := idx.Search(ctx, query, snapshot)
+		if err != nil || len(got) != want {
+			t.Fatalf("search after compact %q: %d, want %d: %v", query, len(got), want, err)
+		}
+	}
 	result := map[string]interface{}{
 		"single_puts":            single.Requests["PUT"] - before.Requests["PUT"],
 		"single_sent_body_bytes": single.SentBytes - before.SentBytes,
@@ -76,6 +95,10 @@ func TestUpdates(t *testing.T) {
 		"batch_puts":             afterBatch.Requests["PUT"] - beforeBatch.Requests["PUT"],
 		"batch_sent_body_bytes":  afterBatch.SentBytes - beforeBatch.SentBytes,
 		"segments_after_batch":   len(manifest.Segments),
+		"segments_after_compact": len(compactManifest.Segments),
+		"compact_gets":           afterCompact.Requests["GET"] - beforeCompact.Requests["GET"],
+		"compact_puts":           afterCompact.Requests["PUT"] - beforeCompact.Requests["PUT"],
+		"compact_sent_bytes":     afterCompact.SentBytes - beforeCompact.SentBytes,
 	}
 	data, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {

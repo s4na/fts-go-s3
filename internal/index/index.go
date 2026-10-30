@@ -277,6 +277,10 @@ func (i Index) Apply(ctx context.Context, changes []Change) error {
 	if len(postings) > 0 {
 		manifest.Segments = append(manifest.Segments, segment)
 	}
+	return i.publish(ctx, manifest, etag)
+}
+
+func (i Index) publish(ctx context.Context, manifest Manifest, etag string) error {
 	data, err := json.Marshal(manifest)
 	if err != nil {
 		return err
@@ -293,6 +297,61 @@ func (i Index) Apply(ctx context.Context, changes []Change) error {
 		return fmt.Errorf("publish manifest: HTTP %d: %s", r.Status, r.Body)
 	}
 	return nil
+}
+
+// Compact writes a new immutable segment and atomically publishes it. It keeps
+// old objects: readers with an older cached manifest may still need them.
+func (i Index) Compact(ctx context.Context) error {
+	manifest, etag, err := i.readManifest(ctx)
+	if err != nil {
+		return err
+	}
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return err
+	}
+	segment := fmt.Sprintf("%x", random[:])
+	for n := 0; n < manifest.Shards; n++ {
+		merged := make(map[string][]uint64)
+		for _, previous := range manifest.Segments {
+			key := strings.Trim(i.Prefix, "/") + fmt.Sprintf("/segments/%s/shards/%d", previous, n)
+			r, err := i.S3.Request(ctx, http.MethodGet, i.Bucket, key, nil, nil, nil)
+			if err != nil {
+				return err
+			}
+			if r.Status == http.StatusNotFound {
+				continue
+			}
+			if r.Status != http.StatusOK {
+				return fmt.Errorf("read segment: HTTP %d", r.Status)
+			}
+			postings, err := decode(r.Body)
+			if err != nil {
+				return err
+			}
+			for term, ids := range postings {
+				for _, id := range ids {
+					if id >= uint64(len(manifest.Active)) {
+						return fmt.Errorf("posting references unknown document %d", id)
+					}
+					if manifest.Active[id] {
+						merged[term] = append(merged[term], id)
+					}
+				}
+			}
+		}
+		if len(merged) == 0 {
+			continue
+		}
+		for _, ids := range merged {
+			sort.Slice(ids, func(a, b int) bool { return ids[a] < ids[b] })
+		}
+		if _, err := i.object(ctx, http.MethodPut, fmt.Sprintf("segments/%s/shards/%d", segment, n), encode(merged)); err != nil {
+			return err
+		}
+	}
+	manifest.Segments = []string{segment}
+	return i.publish(ctx, manifest, etag)
 }
 
 // Search loads each needed shard at most once and intersects postings.
