@@ -88,6 +88,9 @@ func run() error {
 	}
 	buildMillis := time.Since(start).Milliseconds()
 	build := meter.Snapshot()
+	if searchEndpoint := os.Getenv("S3_SEARCH_ENDPOINT"); searchEndpoint != "" {
+		client.Endpoint = searchEndpoint
+	}
 	truth := oracle.New(docs)
 	measure := func(cached *index.Manifest) (stats, error) {
 		before := meter.Snapshot()
