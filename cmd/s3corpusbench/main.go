@@ -160,6 +160,9 @@ func run() error {
 	if err := json.Unmarshal(r.Body, &updated); err != nil {
 		return err
 	}
+	if !reflect.DeepEqual(updated, first) {
+		return fmt.Errorf("updated source differs from intended document %q", first.ID)
+	}
 	if err := idx.Update(ctx, updated.ID, &updated); err != nil {
 		return err
 	}
