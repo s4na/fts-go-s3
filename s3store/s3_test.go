@@ -1,4 +1,4 @@
-package zenbun
+package s3store
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	zenbun "github.com/s4na/fts-go-s3"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -40,7 +42,7 @@ func TestS3AddressingSigningAndRetries(t *testing.T) {
 		t.Fatalf("read retry: %+v %v attempts=%d", obj, err, attempts)
 	}
 	attempts = 0
-	_, err = store.Put(context.Background(), "a +/日", []byte("x"), PutOptions{IfNoneMatch: true})
+	_, err = store.Put(context.Background(), "a +/日", []byte("x"), zenbun.PutOptions{IfNoneMatch: true})
 	var response *S3Error
 	if !errors.As(err, &response) || response.StatusCode != http.StatusServiceUnavailable || attempts != 1 {
 		t.Fatalf("conditional put: %v attempts=%d", err, attempts)

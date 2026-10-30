@@ -12,6 +12,7 @@ import (
 	"time"
 
 	zenbun "github.com/s4na/fts-go-s3"
+	"github.com/s4na/fts-go-s3/s3store"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -63,7 +64,7 @@ func run() error {
 	var backend zenbun.Store = &zenbun.MemoryStore{}
 	if *endpoint != "" {
 		var err error
-		backend, err = zenbun.NewS3Store(zenbun.S3Config{Endpoint: *endpoint, Bucket: "zenbun-measure", AccessKey: "testaccess", SecretKey: "testsecret"})
+		backend, err = s3store.NewS3Store(s3store.S3Config{Endpoint: *endpoint, Bucket: "zenbun-measure", AccessKey: "testaccess", SecretKey: "testsecret"})
 		if err != nil {
 			return err
 		}
