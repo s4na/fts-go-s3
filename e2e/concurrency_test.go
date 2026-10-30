@@ -70,7 +70,8 @@ func TestConcurrentWriters(t *testing.T) {
 		}(id)
 	}
 	first, second := <-out, <-out
-	if !((first == nil && errors.Is(second, index.ErrConflict)) || (second == nil && errors.Is(first, index.ErrConflict))) {
+	valid := (first == nil && errors.Is(second, index.ErrConflict)) || (second == nil && errors.Is(first, index.ErrConflict))
+	if !valid {
 		t.Fatalf("expected one success and one conflict, got %v and %v", first, second)
 	}
 	got, err := idx.Search(ctx, "concurrent", nil)
