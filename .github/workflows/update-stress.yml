@@ -1,0 +1,72 @@
+name: Update stress
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '17 20 * * 0'
+permissions:
+  contents: read
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        storage: [versity, seaweedfs]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        with:
+          go-version: '1.26.10'
+          cache: false
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: .data/source
+          key: wiki-ja-20231101-3e1f92c-aozora-0984f7d-sm-v2
+      - name: Prepare documents
+        run: |
+          mkdir -p .data/source
+          if [ ! -s .data/source/wiki.parquet ]; then
+            curl --fail --location --retry 3 --output .data/source/wiki.part 'https://huggingface.co/datasets/wikimedia/wikipedia/resolve/3e1f92c331f318af862b87e2319ed5dc26d80f5d/20231101.ja/train-00000-of-00015.parquet'
+            mv .data/source/wiki.part .data/source/wiki.parquet
+          fi
+          python -m pip install 'pyarrow==20.0.0'
+          python scripts/prepare_data.py --parquet .data/source/wiki.parquet --count 1000 --out .data/generated
+      - name: Start Versity
+        if: matrix.storage == 'versity'
+        run: docker run -d --name s3 -p 8333:7070 -e ROOT_ACCESS_KEY=testaccess -e ROOT_SECRET_KEY=testsecret -e VGW_BACKEND=posix -e VGW_BACKEND_ARGS=/tmp ghcr.io/versity/versitygw:latest
+      - name: Start SeaweedFS
+        if: matrix.storage == 'seaweedfs'
+        run: docker run -d --name s3 -p 8333:8333 chrislusf/seaweedfs:latest server -s3 -ip.bind=0.0.0.0
+      - name: Wait for storage
+        run: |
+          for i in $(seq 1 60); do
+            if curl -s -o /dev/null http://localhost:8333/; then exit 0; fi
+            sleep 2
+          done
+          docker logs s3
+          exit 1
+      - name: Repeat updates and compare with oracle
+        env:
+          S3_ENDPOINT: http://localhost:8333
+        run: |
+          singles=10
+          batches=1
+          if [ '${{ github.event_name }}' = schedule ] || [ '${{ github.event_name }}' = workflow_dispatch ]; then
+            singles=1000
+            batches=10
+          fi
+          go run ./cmd/stressbench --docs .data/generated/documents.jsonl --singles "$singles" --batches "$batches" --out .data/stress.json
+          printf '## %s repeated updates\n\n```json\n' '${{ matrix.storage }}' >> "$GITHUB_STEP_SUMMARY"
+          cat .data/stress.json >> "$GITHUB_STEP_SUMMARY"
+          printf '\n```\n' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: update-stress-${{ matrix.storage }}
+          path: .data/stress.json
+          include-hidden-files: true
+          if-no-files-found: ignore
