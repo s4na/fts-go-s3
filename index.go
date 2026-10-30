@@ -18,10 +18,10 @@ const manifestVersion = 1
 
 // Index stores immutable segments under a prefix, separate from source documents.
 type Index struct {
-	store  Store
-	prefix string
+	store   Store
+	prefix  string
 	cacheMu sync.Mutex
-	cache map[string]*segmentReader
+	cache   map[string]*segmentReader
 }
 
 // Open configures an index. It does not create an object until the first write.

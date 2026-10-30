@@ -295,3 +295,58 @@ func TestReclaimProtectsReaderAfterCompaction(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func FuzzSegment(f *testing.F) {
+	valid, err := encodeSegment(map[string]indexedDocument{"one": {Terms: terms("日本語")}})
+	if err != nil { f.Fatal(err) }
+	f.Add(valid)
+	f.Add([]byte("invalid"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) > 1<<20 { t.Skip() }
+		store := &MemoryStore{}
+		ctx := context.Background()
+		if _, err := store.Put(ctx, "segment", data, PutOptions{}); err != nil { t.Fatal(err) }
+		reader, err := openSegment(ctx, store, segmentRef{Key: "segment", Size: int64(len(data)), Documents: 1})
+		if err == nil {
+			_, _, _ = reader.lookup(ctx, "a")
+		}
+	})
+}
+
+func TestConcurrentSearchCompactAndReclaim(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	store := &MemoryStore{}
+	index, _ := Open(store, "index")
+	for n := 0; n < 12; n++ {
+		if err := index.Apply(ctx, []Change{{Key: fmt.Sprintf("%d", n), Data: []byte("検索対象")}}); err != nil { t.Fatal(err) }
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 3)
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		for n := 0; n < 20; n++ {
+			keys, err := index.Search(ctx, "検索")
+			if err != nil { errs <- err; return }
+			if len(keys) != 12 { errs <- fmt.Errorf("got %d results", len(keys)); return }
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for n := 0; n < 20; n++ {
+			_, err := index.Compact(ctx)
+			if err != nil && !errors.Is(err, ErrConflict) { errs <- err; return }
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for n := 0; n < 20; n++ {
+			_, err := index.Reclaim(ctx, time.Hour)
+			if err != nil && !errors.Is(err, ErrConflict) { errs <- err; return }
+		}
+	}()
+	wg.Wait()
+	close(errs)
+	for err := range errs { t.Error(err) }
+}

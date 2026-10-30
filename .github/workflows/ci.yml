@@ -15,7 +15,8 @@ jobs:
           cache: false
       - run: go vet ./...
       - run: go test -race ./...
-      - run: go test -run=^$ -fuzz=FuzzSegmentFooter -fuzztime=5s -parallel=2 .
+      - run: go test -run=^$ -fuzz=^FuzzSegmentFooter$ -fuzztime=5s -parallel=2 .
+      - run: go test -run=^$ -fuzz=^FuzzSegment$ -fuzztime=5s -parallel=2 .
       - run: go test -run=^$ -fuzz=FuzzManifest -fuzztime=5s -parallel=2 .
       - run: go mod tidy && git diff --exit-code -- go.mod go.sum
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
