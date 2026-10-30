@@ -57,7 +57,7 @@ def main():
             samples.append(doc)
     # U+0130 differs between Python's full lowercase mapping and Go's simple
     # mapping. Check the actual cross-language path before generating queries.
-    normalized = normalize_all(["aaaaaİbbbbb\u0085x"] + [doc["text"] for doc in samples] + [doc["title"] + "\n" + doc["text"] for doc in samples[:200]])
+    normalized = normalize_all(["aaaaaİbbbbb\u0085x"] + [doc["text"] for doc in samples] + [doc["title"] + "\n" + doc["text"] for doc in samples])
     if normalized[0] != "aaaaaibbbbb\u0085x":
         raise RuntimeError("Go normalization regression")
     normalized_text = normalized[1:1 + len(samples)]
@@ -73,8 +73,11 @@ def main():
             for length in (2, 5, 10):
                 start = len(text) // 2
                 add("substring", text[start:start + length])
+    for text in normalized_text[200:]:
+        if len(text) >= 10:
+            add("aozora", text[len(text) // 2:len(text) // 2 + 10])
     terms = collections.Counter()
-    for text in normalized_combined:
+    for text in normalized_combined[:200]:
         terms.update(set(text[i:i + 2] for i in range(len(text) - 1)))
     if terms:
         ranked = sorted(terms.items(), key=lambda item: (-item[1], item[0]))
@@ -88,10 +91,14 @@ def main():
     # is found in the oracle-normalized source documents.
     normalized_queries = normalize_all([q["query"] for q in queries])
     positives = {"title", "substring", "frequent", "rare"}
+    if args.aozora:
+        positives.add("aozora")
     queries = [q for q, normalized_query in zip(queries, normalized_queries)
                if q["kind"] not in positives or any(normalized_query in text for text in normalized_combined)]
     if not positives.issubset({q["kind"] for q in queries}):
         raise RuntimeError("missing positive query category after normalization")
+    if sum(q["kind"] == "aozora" for q in queries) != len(args.aozora):
+        raise RuntimeError("missing a positive query for an Aozora work")
     (out / "queries.json").write_text(json.dumps(queries, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"wrote {count} Wikipedia documents and {len(args.aozora)} Aozora works; {len(queries)} queries")
 
