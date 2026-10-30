@@ -223,23 +223,38 @@ func decodeList(data []byte) ([]string, error) {
 	return keys, nil
 }
 
+// documentTable caches only the immutable key table and retries after read errors.
+func (reader *segmentReader) documentTable(ctx context.Context) ([]string, error) {
+	reader.docMu.Lock()
+	defer reader.docMu.Unlock()
+	if reader.docKeys != nil {
+		return reader.docKeys, nil
+	}
+	table, found, err := reader.lookup(ctx, "a")
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, errors.New("zenbun: missing segment document list")
+	}
+	keys, err := decodeList(table)
+	if err != nil || len(keys) != reader.ref.Documents {
+		return nil, errors.New("zenbun: invalid segment document table")
+	}
+	reader.docKeys = keys
+	return keys, nil
+}
+
 // decodePosting resolves version 2 document IDs through the segment's sorted
-// document table. The table is read at most once per segment and search.
+// document table. The immutable table is cached by the segment reader.
 func (reader *segmentReader) decodePosting(ctx context.Context, data []byte, documentKeys *[]string) ([]string, error) {
 	if reader.version == legacySegmentVersion {
 		return decodeList(data)
 	}
 	if *documentKeys == nil {
-		table, found, err := reader.lookup(ctx, "a")
+		keys, err := reader.documentTable(ctx)
 		if err != nil {
 			return nil, err
-		}
-		if !found {
-			return nil, errors.New("zenbun: missing segment document list")
-		}
-		keys, err := decodeList(table)
-		if err != nil || len(keys) != reader.ref.Documents {
-			return nil, errors.New("zenbun: invalid segment document table")
 		}
 		*documentKeys = keys
 	}

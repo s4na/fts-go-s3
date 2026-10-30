@@ -12,6 +12,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
@@ -233,6 +234,8 @@ func readRange(ctx context.Context, store Store, key string, start, length int64
 }
 
 type segmentReader struct {
+	docMu       sync.Mutex
+	docKeys     []string
 	version     uint32
 	store       Store
 	ref         segmentRef
