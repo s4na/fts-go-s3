@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/s4na/fts-go-s3/internal/oracle"
 	"github.com/s4na/fts-go-s3/internal/s3lite"
@@ -32,6 +33,20 @@ type Span struct {
 	Length int64 `json:"length"`
 }
 
+// ReadLease bounds how long a snapshot may be used, including each search or
+// compaction. Reclamation additionally requires a clock-skew safety margin.
+const ReadLease = time.Minute
+
+// ClockSkewAllowance is the maximum permitted difference between writer and
+// reclaimer clocks. Deployments with larger skew must not run reclamation.
+const ClockSkewAllowance = 10 * time.Second
+
+type RetiredSegment struct {
+	ID string `json:"id"`
+	RetiredAt time.Time `json:"retired_at"`
+	Packed bool `json:"packed"`
+}
+
 type Manifest struct {
 	Shards       int               `json:"shards"`
 	Documents    []string          `json:"documents"`
@@ -40,6 +55,8 @@ type Manifest struct {
 	Ranges       map[string][]Span `json:"ranges,omitempty"`
 	BloomEnabled bool              `json:"bloom_enabled,omitempty"`
 	Filters      map[string][]byte `json:"filters,omitempty"`
+	Retired      []RetiredSegment `json:"retired,omitempty"`
+	acquiredAt   time.Time
 }
 
 func (i Index) object(ctx context.Context, method, key string, data []byte) (s3lite.Result, error) {
@@ -210,6 +227,7 @@ func (i Index) Build(ctx context.Context, docs []oracle.Document, count int) (Ma
 	if r.Status < 200 || r.Status >= 300 {
 		return Manifest{}, fmt.Errorf("publish manifest: HTTP %d: %s", r.Status, r.Body)
 	}
+	manifest.acquiredAt = time.Now()
 	return manifest, nil
 }
 
@@ -219,6 +237,7 @@ func (i Index) Manifest(ctx context.Context) (Manifest, error) {
 }
 
 func (i Index) readManifest(ctx context.Context) (Manifest, string, error) {
+	acquiredAt := time.Now()
 	r, err := i.object(ctx, http.MethodGet, "manifest.json", nil)
 	if err != nil {
 		return Manifest{}, "", err
@@ -233,6 +252,7 @@ func (i Index) readManifest(ctx context.Context) (Manifest, string, error) {
 	if r.Header.Get("ETag") == "" {
 		return Manifest{}, "", fmt.Errorf("manifest has no ETag")
 	}
+	manifest.acquiredAt = acquiredAt
 	return manifest, r.Header.Get("ETag"), nil
 }
 
@@ -341,6 +361,8 @@ func (i Index) publish(ctx context.Context, manifest Manifest, etag string) erro
 // Compact writes a new immutable segment and atomically publishes it. It keeps
 // old objects: readers with an older cached manifest may still need them.
 func (i Index) Compact(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, ReadLease)
+	defer cancel()
 	manifest, etag, err := i.readManifest(ctx)
 	if err != nil {
 		return err
@@ -391,6 +413,14 @@ func (i Index) Compact(ctx context.Context) error {
 			return err
 		}
 	}
+	// The CAS below can complete as late as the end of its bounded read lease.
+	// Starting grace at this conservative future bound protects readers that
+	// acquire the old manifest immediately before publication.
+	retiredAt := time.Now().UTC().Add(ReadLease)
+	for _, previous := range manifest.Segments {
+		_, packed := manifest.Ranges[previous]
+		manifest.Retired = append(manifest.Retired, RetiredSegment{ID: previous, RetiredAt: retiredAt, Packed: packed})
+	}
 	manifest.Segments = []string{segment}
 	manifest.Ranges = nil
 	if manifest.BloomEnabled {
@@ -399,9 +429,63 @@ func (i Index) Compact(ctx context.Context) error {
 	return i.publish(ctx, manifest, etag)
 }
 
+// Reclaim removes only explicitly retired segments after all bounded readers
+// have expired. The caller must ensure clocks differ by at most the allowance.
+// Unpublished/orphan segments are deliberately outside this operation.
+func (i Index) Reclaim(ctx context.Context, grace time.Duration) (int, error) {
+	if grace < ReadLease+ClockSkewAllowance {
+		return 0, fmt.Errorf("reclamation grace must cover the read lease and clock skew")
+	}
+	manifest, etag, err := i.readManifest(ctx)
+	if err != nil {
+		return 0, err
+	}
+	cutoff := time.Now().UTC().Add(-grace)
+	remaining := make([]RetiredSegment, 0, len(manifest.Retired))
+	deleted := 0
+	for _, old := range manifest.Retired {
+		if old.RetiredAt.After(cutoff) {
+			remaining = append(remaining, old)
+			continue
+		}
+		if old.Packed {
+			if _, err := i.object(ctx, http.MethodDelete, fmt.Sprintf("segments/%s/packed", old.ID), nil); err != nil {
+				return deleted, err
+			}
+		} else {
+			for n := 0; n < manifest.Shards; n++ {
+				if _, err := i.object(ctx, http.MethodDelete, fmt.Sprintf("segments/%s/shards/%d", old.ID, n), nil); err != nil {
+					return deleted, err
+				}
+			}
+		}
+		deleted++
+	}
+	if deleted == 0 {
+		return 0, nil
+	}
+	manifest.Retired = remaining
+	if err := i.publish(ctx, manifest, etag); err != nil {
+		return deleted, err
+	}
+	return deleted, nil
+}
+
 // Search loads each needed shard at most once and intersects postings.
 // Passing a manifest caches it; nil fetches it afresh.
 func (i Index) Search(ctx context.Context, query string, cached *Manifest) ([]string, error) {
+	deadline := time.Now().Add(ReadLease)
+	if cached != nil {
+		if cached.acquiredAt.IsZero() {
+			return nil, fmt.Errorf("cached manifest has no read lease")
+		}
+		deadline = cached.acquiredAt.Add(ReadLease)
+	}
+	ctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("manifest read lease expired: %w", err)
+	}
 	queryTerms := (tokenize.Bigram{}).Tokens(query)
 	if len(queryTerms) == 0 {
 		return nil, nil

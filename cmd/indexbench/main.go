@@ -101,7 +101,24 @@ func run() error {
 		before := meter.Snapshot()
 		var s stats
 		var times []int64
+		var refreshed time.Time
+		if cached != nil {
+			fresh, err := idx.Manifest(ctx)
+			if err != nil {
+				return s, err
+			}
+			cached = &fresh
+			refreshed = time.Now()
+		}
 		for _, q := range queries {
+			if cached != nil && time.Since(refreshed) >= index.ReadLease/2 {
+				fresh, err := idx.Manifest(ctx)
+				if err != nil {
+					return s, err
+				}
+				cached = &fresh
+				refreshed = time.Now()
+			}
 			start := time.Now()
 			candidates, err := idx.Search(ctx, q.Query, cached)
 			if err != nil {

@@ -1,0 +1,43 @@
+name: Reclamation grace
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  reclaim:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        storage: [versity, seaweedfs]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        with:
+          go-version: '1.26.10'
+          cache: false
+      - name: Start Versity
+        if: matrix.storage == 'versity'
+        run: docker run -d --name s3 -p 8333:7070 -e ROOT_ACCESS_KEY=testaccess -e ROOT_SECRET_KEY=testsecret -e VGW_BACKEND=posix -e VGW_BACKEND_ARGS=/tmp ghcr.io/versity/versitygw:latest
+      - name: Start SeaweedFS
+        if: matrix.storage == 'seaweedfs'
+        run: docker run -d --name s3 -p 8333:8333 chrislusf/seaweedfs:latest server -s3 -ip.bind=0.0.0.0
+      - name: Wait for storage
+        run: |
+          for i in $(seq 1 60); do
+            if curl -s -o /dev/null http://localhost:8333/; then exit 0; fi
+            sleep 2
+          done
+          docker logs s3
+          exit 1
+      - name: Verify grace and expired snapshot
+        env:
+          S3_ENDPOINT: http://localhost:8333
+          RECLAIM_FULL: '1'
+        run: |
+          go test -v -run TestReclaimAfterGrace ./e2e
+          printf '## %s: old snapshot survived grace, expired, then retired object was deleted\n' '${{ matrix.storage }}' >> "$GITHUB_STEP_SUMMARY"
