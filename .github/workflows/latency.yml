@@ -7,6 +7,7 @@ on:
       - internal/tokenize/**
       - cmd/indexbench/**
       - scripts/prepare_data.py
+      - scripts/compare_baseline.py
       - go.mod
       - go.sum
   push:
@@ -16,6 +17,7 @@ on:
     - cron: '57 18 * * 0'
 permissions:
   contents: read
+  actions: read
 jobs:
   experiment:
     runs-on: ubuntu-latest
@@ -114,6 +116,25 @@ jobs:
           printf '## %s: %s documents, %s shards, %s layout, bloom=%s, %s ms upstream toxic\n\n```json\n' '${{ matrix.storage }}' '${{ matrix.count }}' '${{ matrix.shards }}' '${{ matrix.layout }}' '${{ matrix.bloom }}' '${{ matrix.delay }}' >> "$GITHUB_STEP_SUMMARY"
           cat .data/experiment.json >> "$GITHUB_STEP_SUMMARY"
           printf '\n```\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: Compare with latest successful main result
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: latency-${{ matrix.storage }}-${{ matrix.count }}-${{ matrix.shards }}-${{ matrix.delay }}-${{ matrix.layout }}-${{ matrix.bloom }}
+        run: |
+          printf '\n### Comparison with latest successful main run\n\n' >> "$GITHUB_STEP_SUMMARY"
+          if ! run_id=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow latency.yml --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty'); then
+            printf 'Main baseline is unavailable.\n' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ -z "$run_id" ] || ! gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name "$ARTIFACT_NAME" --dir .data/baseline; then
+            printf 'No matching main artifact is available.\n' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          printf 'Baseline: [Actions run %s](https://github.com/%s/actions/runs/%s)\n\n' "$run_id" "$GITHUB_REPOSITORY" "$run_id" >> "$GITHUB_STEP_SUMMARY"
+          if ! python scripts/compare_baseline.py .data/baseline/experiment.json .data/experiment.json >> "$GITHUB_STEP_SUMMARY"; then
+            printf 'The baseline could not be compared; inspect the job log.\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
