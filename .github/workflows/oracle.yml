@@ -7,6 +7,7 @@ on:
 permissions:
   contents: read
   actions: read
+  pull-requests: write
 jobs:
   oracle:
     runs-on: ubuntu-latest
@@ -54,7 +55,22 @@ jobs:
           fi
           mkdir -p .data/baseline
           gh run download "$run_id" --name metrics --dir .data/baseline
-          python scripts/compare-metrics.py .data/baseline/metrics.json .data/metrics.json >> "$GITHUB_STEP_SUMMARY"
+          python scripts/compare-metrics.py .data/baseline/metrics.json .data/metrics.json > .data/comparison.md
+          cat .data/comparison.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish comparison on PR
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [ ! -s .data/comparison.md ]; then exit 0; fi
+          python scripts/pr-metrics-comment.py .data/comparison.md > .data/comment.json
+          comment_id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --paginate --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("<!-- zenbun-metrics -->"))) | .id' | head -n 1)
+          if [ -n "$comment_id" ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" --input .data/comment.json > /dev/null
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --input .data/comment.json > /dev/null
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: metrics

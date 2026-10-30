@@ -358,8 +358,8 @@ func (i *Index) Compact(ctx context.Context) (bool, error) {
 	}
 	at := -1
 	for n := 0; n+1 < len(m.Segments); n++ {
-		a, b := m.Segments[n].Documents, m.Segments[n+1].Documents
-		if a <= b && b-a <= a || b < a && a-b <= b {
+		a, b := m.Segments[n].Size, m.Segments[n+1].Size
+		if a <= b && b/8 <= a || b < a && a/8 <= b {
 			at = n
 			break
 		}
@@ -421,6 +421,9 @@ func (i *Index) Reclaim(ctx context.Context, grace time.Duration) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	// Objects created by writers that observe this barrier must not be marked
+	// from our older snapshot. The age threshold accommodates clock skew.
+	barrierStart := time.Now()
 	if err := i.publish(ctx, m, etag); err != nil {
 		return 0, err
 	}
@@ -450,7 +453,7 @@ func (i *Index) Reclaim(ctx context.Context, grace time.Duration) (int, error) {
 		}
 		markerKey := i.prefix + "retired/" + id
 		present[markerKey] = true
-		if live[obj.Key] {
+		if live[obj.Key] || obj.LastModified.IsZero() || !obj.LastModified.Before(barrierStart.Add(-grace)) {
 			continue
 		}
 		marker, exists := markerByKey[markerKey]

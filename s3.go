@@ -236,6 +236,9 @@ func (s *S3Store) Put(ctx context.Context, key string, data []byte, options PutO
 	if err != nil {
 		return "", err
 	}
+	if status == http.StatusNotFound && options.IfMatch != "" {
+		return "", fmt.Errorf("s3 put: %w", ErrConflict)
+	}
 	if status != http.StatusOK {
 		return "", s3Error("put", status)
 	}

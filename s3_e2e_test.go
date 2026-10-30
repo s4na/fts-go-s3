@@ -24,6 +24,9 @@ func TestS3EndToEnd(t *testing.T) {
 	if err != nil || (status != http.StatusOK && status != http.StatusConflict) {
 		t.Fatalf("create bucket: %d %v", status, err)
 	}
+	if _, err := store.Put(ctx, "missing", []byte("x"), PutOptions{IfMatch: "\"missing\""}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("missing update conflict: %v", err)
+	}
 	etag, err := store.Put(ctx, "docs/日本語 +.txt", []byte("日本語と猫"), PutOptions{IfNoneMatch: true})
 	if err != nil {
 		t.Fatal(err)

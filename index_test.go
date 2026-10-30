@@ -191,6 +191,12 @@ func TestReclaim(t *testing.T) {
 	if _, err := index.Compact(ctx); err != nil {
 		t.Fatal(err)
 	}
+	store.mu.Lock()
+	for key, obj := range store.objects {
+		obj.time = time.Now().Add(-time.Hour)
+		store.objects[key] = obj
+	}
+	store.mu.Unlock()
 	if n, err := index.Reclaim(ctx, time.Minute); err != nil || n != 0 {
 		t.Fatalf("first pass must only mark: %d, %v", n, err)
 	}
@@ -379,7 +385,9 @@ type faultStore struct {
 }
 
 func (s *faultStore) Get(ctx context.Context, key string, r *ByteRange) (Object, error) {
-	if s.failure == "get" { return Object{}, errors.New("injected get") }
+	if s.failure == "get" {
+		return Object{}, errors.New("injected get")
+	}
 	return s.Store.Get(ctx, key, r)
 }
 
@@ -396,14 +404,22 @@ func TestStoreFailuresPreservePublishedState(t *testing.T) {
 		t.Run(stage, func(t *testing.T) {
 			store := &faultStore{Store: &MemoryStore{}}
 			index, _ := Open(store, "index")
-			if err := index.Apply(ctx, []Change{{Key: "a", Data: []byte("original")}}); err != nil { t.Fatal(err) }
+			if err := index.Apply(ctx, []Change{{Key: "a", Data: []byte("original")}}); err != nil {
+				t.Fatal(err)
+			}
 			store.failure = stage
-			if err := index.Apply(ctx, []Change{{Key: "a", Data: []byte("changed")}}); err == nil { t.Fatal("expected failure") }
+			if err := index.Apply(ctx, []Change{{Key: "a", Data: []byte("changed")}}); err == nil {
+				t.Fatal("expected failure")
+			}
 			store.failure = ""
 			keys, err := index.Search(ctx, "original")
-			if err != nil || len(keys) != 1 || keys[0] != "a" { t.Fatalf("published state: %v, %v", keys, err) }
+			if err != nil || len(keys) != 1 || keys[0] != "a" {
+				t.Fatalf("published state: %v, %v", keys, err)
+			}
 			keys, err = index.Search(ctx, "changed")
-			if err != nil || len(keys) != 0 { t.Fatalf("unpublished state: %v, %v", keys, err) }
+			if err != nil || len(keys) != 0 {
+				t.Fatalf("unpublished state: %v, %v", keys, err)
+			}
 		})
 	}
 }
@@ -411,11 +427,56 @@ func TestStoreFailuresPreservePublishedState(t *testing.T) {
 func TestCompactDropsObsoleteDeletes(t *testing.T) {
 	ctx := context.Background()
 	index, _ := Open(&MemoryStore{}, "index")
-	if err := index.Apply(ctx, []Change{{Key: "a", Data: []byte("old")}}); err != nil { t.Fatal(err) }
-	if err := index.Apply(ctx, []Change{{Key: "a", Delete: true}}); err != nil { t.Fatal(err) }
-	if changed, err := index.Compact(ctx); err != nil || !changed { t.Fatalf("compact: %v %v", changed, err) }
+	if err := index.Apply(ctx, []Change{{Key: "a", Data: []byte("old")}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := index.Apply(ctx, []Change{{Key: "a", Delete: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := index.Compact(ctx); err != nil || !changed {
+		t.Fatalf("compact: %v %v", changed, err)
+	}
 	m, _, err := index.loadManifest(ctx)
-	if err != nil || len(m.Segments) != 0 { t.Fatalf("manifest: %+v %v", m, err) }
+	if err != nil || len(m.Segments) != 0 {
+		t.Fatalf("manifest: %+v %v", m, err)
+	}
 	keys, err := index.Search(ctx, "old")
-	if err != nil || len(keys) != 0 { t.Fatalf("deleted key: %v %v", keys, err) }
+	if err != nil || len(keys) != 0 {
+		t.Fatalf("deleted key: %v %v", keys, err)
+	}
+}
+
+type pausedListStore struct {
+	Store
+	started chan struct{}
+	resume chan struct{}
+}
+
+func (s *pausedListStore) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
+	if strings.HasSuffix(prefix, "/segments/") {
+		close(s.started)
+		select {
+		case <-s.resume:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return s.Store.List(ctx, prefix)
+}
+
+func TestReclaimDoesNotMarkConcurrentPublication(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	memory := &MemoryStore{}
+	paused := &pausedListStore{Store: memory, started: make(chan struct{}), resume: make(chan struct{})}
+	collector, _ := Open(paused, "index")
+	writer, _ := Open(memory, "index")
+	result := make(chan error, 1)
+	go func() { _, err := collector.Reclaim(ctx, time.Hour); result <- err }()
+	<-paused.started
+	if err := writer.Apply(ctx, []Change{{Key: "a", Data: []byte("new")}}); err != nil { t.Fatal(err) }
+	close(paused.resume)
+	if err := <-result; err != nil { t.Fatal(err) }
+	markers, err := memory.List(ctx, "index/retired/")
+	if err != nil || len(markers) != 0 { t.Fatalf("live object was marked: %v %v", markers, err) }
 }
