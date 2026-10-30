@@ -23,6 +23,12 @@ type Index struct {
 	S3     *s3lite.Client
 	Bucket string
 	Prefix string
+	Range  bool
+}
+
+type Span struct {
+	Offset int64 `json:"offset"`
+	Length int64 `json:"length"`
 }
 
 type Manifest struct {
@@ -30,6 +36,7 @@ type Manifest struct {
 	Documents []string `json:"documents"`
 	Active    []bool   `json:"active"`
 	Segments  []string `json:"segments"`
+	Ranges    map[string][]Span `json:"ranges,omitempty"`
 }
 
 func (i Index) object(ctx context.Context, method, key string, data []byte) (s3lite.Result, error) {
@@ -160,13 +167,27 @@ func (i Index) Build(ctx context.Context, docs []oracle.Document, count int) (Ma
 			shards[n][term] = append(shards[n][term], uint64(index))
 		}
 	}
+	var packed bytes.Buffer
+	spans := make([]Span, count)
 	for n, postings := range shards {
 		if postings == nil {
 			continue
 		}
-		if _, err := i.object(ctx, http.MethodPut, fmt.Sprintf("segments/%s/shards/%d", segment, n), encode(postings)); err != nil {
+		data := encode(postings)
+		if i.Range {
+			spans[n] = Span{Offset: int64(packed.Len()), Length: int64(len(data))}
+			_, _ = packed.Write(data)
+			continue
+		}
+		if _, err := i.object(ctx, http.MethodPut, fmt.Sprintf("segments/%s/shards/%d", segment, n), data); err != nil {
 			return Manifest{}, err
 		}
+	}
+	if i.Range {
+		if _, err := i.object(ctx, http.MethodPut, fmt.Sprintf("segments/%s/packed", segment), packed.Bytes()); err != nil {
+			return Manifest{}, err
+		}
+		manifest.Ranges = map[string][]Span{segment: spans}
 	}
 	data, err := json.Marshal(manifest)
 	if err != nil {
@@ -314,18 +335,14 @@ func (i Index) Compact(ctx context.Context) error {
 	for n := 0; n < manifest.Shards; n++ {
 		merged := make(map[string][]uint64)
 		for _, previous := range manifest.Segments {
-			key := strings.Trim(i.Prefix, "/") + fmt.Sprintf("/segments/%s/shards/%d", previous, n)
-			r, err := i.S3.Request(ctx, http.MethodGet, i.Bucket, key, nil, nil, nil)
+			data, exists, err := i.readShard(ctx, manifest, previous, n)
 			if err != nil {
 				return err
 			}
-			if r.Status == http.StatusNotFound {
+			if !exists {
 				continue
 			}
-			if r.Status != http.StatusOK {
-				return fmt.Errorf("read segment: HTTP %d", r.Status)
-			}
-			postings, err := decode(r.Body)
+			postings, err := decode(data)
 			if err != nil {
 				return err
 			}
@@ -351,6 +368,7 @@ func (i Index) Compact(ctx context.Context) error {
 		}
 	}
 	manifest.Segments = []string{segment}
+	manifest.Ranges = nil
 	return i.publish(ctx, manifest, etag)
 }
 
@@ -376,7 +394,7 @@ func (i Index) Search(ctx context.Context, query string, cached *Manifest) ([]st
 	}
 	var out []string
 	for _, segment := range manifest.Segments {
-		ids, err := i.searchSegment(ctx, segment, queryTerms, manifest.Shards)
+		ids, err := i.searchSegment(ctx, manifest, segment, queryTerms)
 		if err != nil {
 			return nil, err
 		}
@@ -393,24 +411,63 @@ func (i Index) Search(ctx context.Context, query string, cached *Manifest) ([]st
 	return out, nil
 }
 
-func (i Index) searchSegment(ctx context.Context, segment string, queryTerms []string, shardCount int) (map[uint64]bool, error) {
+func (i Index) readShard(ctx context.Context, manifest Manifest, segment string, n int) ([]byte, bool, error) {
+	key := strings.Trim(i.Prefix, "/") + fmt.Sprintf("/segments/%s/shards/%d", segment, n)
+	var headers http.Header
+	want := http.StatusOK
+	if spans, ok := manifest.Ranges[segment]; ok {
+		if len(spans) != manifest.Shards || n >= len(spans) || spans[n].Offset < 0 || spans[n].Length < 0 {
+			return nil, false, fmt.Errorf("invalid range table")
+		}
+		span := spans[n]
+		if span.Length == 0 {
+			return nil, false, nil
+		}
+		if span.Offset > int64(^uint64(0)>>1)-span.Length {
+			return nil, false, fmt.Errorf("range overflow")
+		}
+		key = strings.Trim(i.Prefix, "/") + fmt.Sprintf("/segments/%s/packed", segment)
+		headers = http.Header{"Range": {fmt.Sprintf("bytes=%d-%d", span.Offset, span.Offset+span.Length-1)}}
+		want = http.StatusPartialContent
+	}
+	r, err := i.S3.Request(ctx, http.MethodGet, i.Bucket, key, nil, headers, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	if r.Status == http.StatusNotFound && headers == nil {
+		return nil, false, nil
+	}
+	if r.Status != want {
+		return nil, false, fmt.Errorf("read shard: HTTP %d, expected %d", r.Status, want)
+	}
+	if headers != nil && int64(len(r.Body)) != manifest.Ranges[segment][n].Length {
+		return nil, false, fmt.Errorf("range response length mismatch")
+	}
+	if headers != nil {
+		span := manifest.Ranges[segment][n]
+		prefix := fmt.Sprintf("bytes %d-%d/", span.Offset, span.Offset+span.Length-1)
+		if !strings.HasPrefix(r.Header.Get("Content-Range"), prefix) {
+			return nil, false, fmt.Errorf("unexpected Content-Range %q", r.Header.Get("Content-Range"))
+		}
+	}
+	return r.Body, true, nil
+}
+
+func (i Index) searchSegment(ctx context.Context, manifest Manifest, segment string, queryTerms []string) (map[uint64]bool, error) {
 	loaded := make(map[int]map[string][]uint64)
 	var candidates map[uint64]bool
 	for _, term := range queryTerms {
-		n := shard(term, shardCount)
+		n := shard(term, manifest.Shards)
 		postings, ok := loaded[n]
 		if !ok {
-			r, err := i.S3.Request(ctx, http.MethodGet, i.Bucket, strings.Trim(i.Prefix, "/")+fmt.Sprintf("/segments/%s/shards/%d", segment, n), nil, nil, nil)
+			data, exists, err := i.readShard(ctx, manifest, segment, n)
 			if err != nil {
 				return nil, err
 			}
-			if r.Status == http.StatusNotFound {
+			if !exists {
 				return nil, nil
 			}
-			if r.Status != http.StatusOK {
-				return nil, fmt.Errorf("get shard: HTTP %d", r.Status)
-			}
-			postings, err = decode(r.Body)
+			postings, err = decode(data)
 			if err != nil {
 				return nil, err
 			}

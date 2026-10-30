@@ -20,11 +20,18 @@ jobs:
         count: [1000, 10000]
         delay: [0, 20, 50]
         shards: [16, 256]
+        layout: [shards, range]
         exclude:
           - shards: 16
             delay: 20
           - shards: 16
             delay: 50
+          - layout: range
+            delay: 20
+          - layout: range
+            delay: 50
+          - layout: range
+            shards: 16
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
@@ -78,14 +85,14 @@ jobs:
           S3_ENDPOINT: http://127.0.0.1:8333
           S3_SEARCH_ENDPOINT: http://127.0.0.1:8666
         run: |
-          go run ./cmd/indexbench --docs .data/generated/documents.jsonl --queries .data/generated/queries.json --shards '${{ matrix.shards }}' --out .data/experiment.json
-          printf '## %s: %s documents, %s shards, %s ms upstream toxic\n\n```json\n' '${{ matrix.storage }}' '${{ matrix.count }}' '${{ matrix.shards }}' '${{ matrix.delay }}' >> "$GITHUB_STEP_SUMMARY"
+          go run ./cmd/indexbench --docs .data/generated/documents.jsonl --queries .data/generated/queries.json --shards '${{ matrix.shards }}' --layout '${{ matrix.layout }}' --out .data/experiment.json
+          printf '## %s: %s documents, %s shards, %s layout, %s ms upstream toxic\n\n```json\n' '${{ matrix.storage }}' '${{ matrix.count }}' '${{ matrix.shards }}' '${{ matrix.layout }}' '${{ matrix.delay }}' >> "$GITHUB_STEP_SUMMARY"
           cat .data/experiment.json >> "$GITHUB_STEP_SUMMARY"
           printf '\n```\n' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
-          name: latency-${{ matrix.storage }}-${{ matrix.count }}-${{ matrix.shards }}-${{ matrix.delay }}
+          name: latency-${{ matrix.storage }}-${{ matrix.count }}-${{ matrix.shards }}-${{ matrix.delay }}-${{ matrix.layout }}
           path: .data/experiment.json
           include-hidden-files: true
           if-no-files-found: ignore
