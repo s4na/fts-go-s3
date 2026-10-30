@@ -281,6 +281,12 @@ err := index.Apply(ctx, []zenbun.Change{
 
 保存形式の細部は[仕様書](docs/format.md)を参照してください。マニフェストとセグメントには形式バージョンがあり、知らないバージョンは読み込みません。
 
+## 依存関係の更新
+
+Dependabot は Go モジュールと GitHub Actions のバージョン更新を毎週確認し、リリースから 7 日以上たった版を提案します。GitHub の仕様により、セキュリティ更新はこの待機期間の対象外です。更新内容と CI の結果を確認してからマージしてください。
+
+GitHub Actions の依存は `.github/workflows/actions.lock` に記録します。workflow の Action を追加・変更した場合は、GitHub の `gh-actions-lock` 拡張で lockfile を更新し、差分を確認してください。Dependabot による Action のバージョン更新は、既存 workflow の lockfile エントリーも更新します。
+
 ## ライセンス
 
 [MIT License](LICENSE)（Copyright (c) 2026 s4na）
