@@ -27,7 +27,7 @@ jobs:
         storage: [versity, seaweedfs]
         count: [1000, 10000]
         delay: [0, 20, 50]
-        shards: [16, 256]
+        shards: [16, 256, 4096]
         layout: [shards, range]
         bloom: [false, true]
         exclude:
@@ -35,12 +35,18 @@ jobs:
             delay: 20
           - shards: 16
             delay: 50
+          - shards: 4096
+            delay: 20
+          - shards: 4096
+            delay: 50
           - layout: range
             delay: 20
           - layout: range
             delay: 50
           - layout: range
             shards: 16
+          - layout: range
+            shards: 4096
           - bloom: true
             delay: 20
           - bloom: true
@@ -49,6 +55,8 @@ jobs:
             layout: range
           - bloom: true
             shards: 16
+          - bloom: true
+            shards: 4096
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
