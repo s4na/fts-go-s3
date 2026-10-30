@@ -19,13 +19,13 @@ import (
 )
 
 type Index struct {
-	S3 *s3lite.Client
+	S3     *s3lite.Client
 	Bucket string
 	Prefix string
 }
 
 type Manifest struct {
-	Shards int `json:"shards"`
+	Shards    int      `json:"shards"`
 	Documents []string `json:"documents"`
 }
 

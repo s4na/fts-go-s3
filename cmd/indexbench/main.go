@@ -18,19 +18,19 @@ import (
 )
 
 type query struct {
-	Kind string `json:"kind"`
+	Kind  string `json:"kind"`
 	Query string `json:"query"`
 }
 
 type stats struct {
-	Queries int `json:"queries"`
-	FalseNegatives int `json:"false_negatives"`
-	FalsePositives int `json:"false_positives"`
-	Candidates int `json:"candidates"`
-	Requests int64 `json:"requests"`
-	ReceivedBytes int64 `json:"received_body_bytes"`
-	P50Millis int64 `json:"p50_ms"`
-	P95Millis int64 `json:"p95_ms"`
+	Queries        int   `json:"queries"`
+	FalseNegatives int   `json:"false_negatives"`
+	FalsePositives int   `json:"false_positives"`
+	Candidates     int   `json:"candidates"`
+	Requests       int64 `json:"requests"`
+	ReceivedBytes  int64 `json:"received_body_bytes"`
+	P50Millis      int64 `json:"p50_ms"`
+	P95Millis      int64 `json:"p95_ms"`
 }
 
 func main() {
@@ -133,12 +133,12 @@ func run() error {
 		return err
 	}
 	payload := struct {
-		Documents int `json:"documents"`
-		Shards int `json:"shards"`
-		BuildMillis int64 `json:"build_ms"`
-		Build s3lite.Counts `json:"build_including_bucket"`
-		Uncached stats `json:"uncached"`
-		Cached stats `json:"cached_manifest"`
+		Documents   int           `json:"documents"`
+		Shards      int           `json:"shards"`
+		BuildMillis int64         `json:"build_ms"`
+		Build       s3lite.Counts `json:"build_including_bucket"`
+		Uncached    stats         `json:"uncached"`
+		Cached      stats         `json:"cached_manifest"`
 	}{len(docs), *count, buildMillis, build, uncached, cached}
 	data, err = json.MarshalIndent(payload, "", "  ")
 	if err != nil {
