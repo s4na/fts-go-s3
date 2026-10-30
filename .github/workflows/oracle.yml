@@ -1,0 +1,82 @@
+name: Corpus oracle and measurements
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+jobs:
+  oracle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        with:
+          go-version: '1.26.10'
+          cache: false
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: .data/source
+          key: wiki-ja-20231101-3e1f92c-aozora-0984f7d-sm-v2
+      - name: Download pinned sources
+        run: |
+          mkdir -p .data/source
+          if [ ! -s .data/source/wiki.parquet ]; then
+            curl --fail --location --retry 3 --output .data/source/wiki.part 'https://huggingface.co/datasets/wikimedia/wikipedia/resolve/3e1f92c331f318af862b87e2319ed5dc26d80f5d/20231101.ja/train-00000-of-00015.parquet'
+            mv .data/source/wiki.part .data/source/wiki.parquet
+          fi
+          for name in 40_ruby_310 45630_txt_23610; do
+            if [ "$name" = 40_ruby_310 ]; then author=000879; else author=000081; fi
+            curl --fail --location --retry 3 --output ".data/source/$name.txt" "https://raw.githubusercontent.com/aozorahack/aozorabunko_text/0984f7dc18a2270bdfd2ff99bf14fd1b3ebb4f65/cards/$author/files/$name/$name.txt"
+          done
+      - name: Prepare data
+        run: |
+          python -m pip install 'pyarrow==20.0.0'
+          python scripts/prepare-corpus.py --wiki .data/source/wiki.parquet --aozora .data/source/40_ruby_310.txt --aozora .data/source/45630_txt_23610.txt --count 10000 --output .data/documents.jsonl
+      - name: Check recall and record metrics
+        run: |
+          go run ./cmd/measure --corpus .data/documents.jsonl --batch 1000 --output .data/metrics.json
+          {
+            printf '## Corpus recall and I/O metrics\n\n```json\n'
+            cat .data/metrics.json
+            printf '\n```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Compare with latest main measurement
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id=$(gh run list --workflow oracle.yml --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
+          if [ -z "$run_id" ] || [ "$run_id" = null ]; then
+            echo 'No main measurement is available yet.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          mkdir -p .data/baseline
+          gh run download "$run_id" --name metrics --dir .data/baseline
+          python scripts/compare-metrics.py .data/baseline/metrics.json .data/metrics.json > .data/comparison.md
+          cat .data/comparison.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish comparison on PR
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [ ! -s .data/comparison.md ]; then exit 0; fi
+          python scripts/pr-metrics-comment.py .data/comparison.md > .data/comment.json
+          comment_id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --paginate --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("<!-- zenbun-metrics -->"))) | .id' | head -n 1)
+          if [ -n "$comment_id" ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" --input .data/comment.json > /dev/null
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --input .data/comment.json > /dev/null
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: metrics
+          path: .data/metrics.json
+          if-no-files-found: error
