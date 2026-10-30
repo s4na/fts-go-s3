@@ -143,7 +143,7 @@ func TestConcurrentWritersConflict(t *testing.T) {
 		go func(key string) { results <- index.Apply(ctx, []Change{{Key: key, Data: []byte(key)}}) }(key)
 	}
 	a, b := <-results, <-results
-	if !((a == nil && errors.Is(b, ErrConflict)) || (b == nil && errors.Is(a, ErrConflict))) {
+	if (a != nil || !errors.Is(b, ErrConflict)) && (b != nil || !errors.Is(a, ErrConflict)) {
 		t.Fatalf("expected one conflict: %v, %v", a, b)
 	}
 }
@@ -298,14 +298,20 @@ func TestReclaimProtectsReaderAfterCompaction(t *testing.T) {
 
 func FuzzSegment(f *testing.F) {
 	valid, err := encodeSegment(map[string]indexedDocument{"one": {Terms: terms("日本語")}})
-	if err != nil { f.Fatal(err) }
+	if err != nil {
+		f.Fatal(err)
+	}
 	f.Add(valid)
 	f.Add([]byte("invalid"))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		if len(data) > 1<<20 { t.Skip() }
+		if len(data) > 1<<20 {
+			t.Skip()
+		}
 		store := &MemoryStore{}
 		ctx := context.Background()
-		if _, err := store.Put(ctx, "segment", data, PutOptions{}); err != nil { t.Fatal(err) }
+		if _, err := store.Put(ctx, "segment", data, PutOptions{}); err != nil {
+			t.Fatal(err)
+		}
 		reader, err := openSegment(ctx, store, segmentRef{Key: "segment", Size: int64(len(data)), Documents: 1})
 		if err == nil {
 			_, _, _ = reader.lookup(ctx, "a")
@@ -319,7 +325,9 @@ func TestConcurrentSearchCompactAndReclaim(t *testing.T) {
 	store := &MemoryStore{}
 	index, _ := Open(store, "index")
 	for n := 0; n < 12; n++ {
-		if err := index.Apply(ctx, []Change{{Key: fmt.Sprintf("%d", n), Data: []byte("検索対象")}}); err != nil { t.Fatal(err) }
+		if err := index.Apply(ctx, []Change{{Key: fmt.Sprintf("%d", n), Data: []byte("検索対象")}}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var wg sync.WaitGroup
 	errs := make(chan error, 3)
@@ -328,25 +336,86 @@ func TestConcurrentSearchCompactAndReclaim(t *testing.T) {
 		defer wg.Done()
 		for n := 0; n < 20; n++ {
 			keys, err := index.Search(ctx, "検索")
-			if err != nil { errs <- err; return }
-			if len(keys) != 12 { errs <- fmt.Errorf("got %d results", len(keys)); return }
+			if err != nil {
+				errs <- err
+				return
+			}
+			if len(keys) != 12 {
+				errs <- fmt.Errorf("got %d results", len(keys))
+				return
+			}
 		}
 	}()
 	go func() {
 		defer wg.Done()
 		for n := 0; n < 20; n++ {
 			_, err := index.Compact(ctx)
-			if err != nil && !errors.Is(err, ErrConflict) { errs <- err; return }
+			if err != nil && !errors.Is(err, ErrConflict) {
+				errs <- err
+				return
+			}
 		}
 	}()
 	go func() {
 		defer wg.Done()
 		for n := 0; n < 20; n++ {
 			_, err := index.Reclaim(ctx, time.Hour)
-			if err != nil && !errors.Is(err, ErrConflict) { errs <- err; return }
+			if err != nil && !errors.Is(err, ErrConflict) {
+				errs <- err
+				return
+			}
 		}
 	}()
 	wg.Wait()
 	close(errs)
-	for err := range errs { t.Error(err) }
+	for err := range errs {
+		t.Error(err)
+	}
+}
+
+type faultStore struct {
+	Store
+	failure string
+}
+
+func (s *faultStore) Get(ctx context.Context, key string, r *ByteRange) (Object, error) {
+	if s.failure == "get" { return Object{}, errors.New("injected get") }
+	return s.Store.Get(ctx, key, r)
+}
+
+func (s *faultStore) Put(ctx context.Context, key string, data []byte, options PutOptions) (string, error) {
+	if s.failure == "segment" && strings.Contains(key, "/segments/") || s.failure == "manifest" && strings.HasSuffix(key, "/manifest") {
+		return "", errors.New("injected put")
+	}
+	return s.Store.Put(ctx, key, data, options)
+}
+
+func TestStoreFailuresPreservePublishedState(t *testing.T) {
+	ctx := context.Background()
+	for _, stage := range []string{"get", "segment", "manifest"} {
+		t.Run(stage, func(t *testing.T) {
+			store := &faultStore{Store: &MemoryStore{}}
+			index, _ := Open(store, "index")
+			if err := index.Apply(ctx, []Change{{Key: "a", Data: []byte("original")}}); err != nil { t.Fatal(err) }
+			store.failure = stage
+			if err := index.Apply(ctx, []Change{{Key: "a", Data: []byte("changed")}}); err == nil { t.Fatal("expected failure") }
+			store.failure = ""
+			keys, err := index.Search(ctx, "original")
+			if err != nil || len(keys) != 1 || keys[0] != "a" { t.Fatalf("published state: %v, %v", keys, err) }
+			keys, err = index.Search(ctx, "changed")
+			if err != nil || len(keys) != 0 { t.Fatalf("unpublished state: %v, %v", keys, err) }
+		})
+	}
+}
+
+func TestCompactDropsObsoleteDeletes(t *testing.T) {
+	ctx := context.Background()
+	index, _ := Open(&MemoryStore{}, "index")
+	if err := index.Apply(ctx, []Change{{Key: "a", Data: []byte("old")}}); err != nil { t.Fatal(err) }
+	if err := index.Apply(ctx, []Change{{Key: "a", Delete: true}}); err != nil { t.Fatal(err) }
+	if changed, err := index.Compact(ctx); err != nil || !changed { t.Fatalf("compact: %v %v", changed, err) }
+	m, _, err := index.loadManifest(ctx)
+	if err != nil || len(m.Segments) != 0 { t.Fatalf("manifest: %+v %v", m, err) }
+	keys, err := index.Search(ctx, "old")
+	if err != nil || len(keys) != 0 { t.Fatalf("deleted key: %v %v", keys, err) }
 }

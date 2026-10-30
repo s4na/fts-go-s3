@@ -43,7 +43,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var docs []document
 	var changes []zenbun.Change
 	scanner := bufio.NewScanner(f)

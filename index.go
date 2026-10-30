@@ -381,13 +381,24 @@ func (i *Index) Compact(ctx context.Context) (bool, error) {
 			docs[key] = doc
 		}
 	}
-	ref, err := i.writeSegment(ctx, docs)
-	if err != nil {
-		return false, err
+	// At the oldest edge there is no earlier version to suppress, so those
+	// tombstones can be removed. Elsewhere they must survive the merge.
+	if at == 0 {
+		for key, doc := range docs {
+			if doc.Deleted {
+				delete(docs, key)
+			}
+		}
 	}
 	segments := make([]segmentRef, 0, len(m.Segments)-1)
 	segments = append(segments, m.Segments[:at]...)
-	segments = append(segments, ref)
+	if len(docs) != 0 {
+		ref, err := i.writeSegment(ctx, docs)
+		if err != nil {
+			return false, err
+		}
+		segments = append(segments, ref)
+	}
 	segments = append(segments, m.Segments[at+2:]...)
 	m.Segments = segments
 	if err := i.publish(ctx, m, etag); err != nil {

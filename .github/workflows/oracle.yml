@@ -2,7 +2,7 @@ name: Corpus oracle and measurements
 on:
   pull_request:
   push:
-    branches: [main, 'codex/**']
+    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
