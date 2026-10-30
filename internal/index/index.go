@@ -372,6 +372,14 @@ func (i Index) Compact(ctx context.Context) error {
 		return err
 	}
 	segment := fmt.Sprintf("%x", random[:])
+	remap := make([]uint64, len(manifest.Documents))
+	var liveDocuments []string
+	for oldID, key := range manifest.Documents {
+		if manifest.Active[oldID] {
+			remap[oldID] = uint64(len(liveDocuments))
+			liveDocuments = append(liveDocuments, key)
+		}
+	}
 	var compactTerms []string
 	for n := 0; n < manifest.Shards; n++ {
 		merged := make(map[string][]uint64)
@@ -393,7 +401,7 @@ func (i Index) Compact(ctx context.Context) error {
 						return fmt.Errorf("posting references unknown document %d", id)
 					}
 					if manifest.Active[id] {
-						merged[term] = append(merged[term], id)
+						merged[term] = append(merged[term], remap[id])
 					}
 				}
 			}
@@ -422,6 +430,11 @@ func (i Index) Compact(ctx context.Context) error {
 		manifest.Retired = append(manifest.Retired, RetiredSegment{ID: previous, RetiredAt: retiredAt, Packed: packed})
 	}
 	manifest.Segments = []string{segment}
+	manifest.Documents = liveDocuments
+	manifest.Active = make([]bool, len(liveDocuments))
+	for n := range manifest.Active {
+		manifest.Active[n] = true
+	}
 	manifest.Ranges = nil
 	if manifest.BloomEnabled {
 		manifest.Filters = map[string][]byte{segment: newBloom(compactTerms)}
