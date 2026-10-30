@@ -319,55 +319,48 @@ func (i *Index) Search(ctx context.Context, query string) ([]string, error) {
 			return nil, err
 		}
 	}
-	result := make(map[string]bool)
-	for n := len(readers) - 1; n >= 0; n-- {
-		var candidates map[string]bool
-		var documentKeys []string
-		for _, term := range queryTerms {
-			data, found, err := readers[n].lookup(ctx, "t"+term)
-			if err != nil {
-				return nil, err
-			}
-			if !found {
-				candidates = nil
-				break
-			}
-			keys, err := readers[n].decodePosting(ctx, data, &documentKeys)
-			if err != nil {
-				return nil, err
-			}
-			if candidates == nil {
-				candidates = make(map[string]bool, len(keys))
-				for _, key := range keys {
-					candidates[key] = true
+	// Different immutable segments can be searched independently. Keep the
+	// number of concurrent reads bounded even when a manifest grows large.
+	const maxSearchWorkers = 8
+	workCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	jobs := make(chan int, len(readers))
+	for n := range readers {
+		jobs <- n
+	}
+	close(jobs)
+	matches := make([][]string, len(readers))
+	var wg sync.WaitGroup
+	var firstError error
+	var errorOnce sync.Once
+	for worker := 0; worker < min(maxSearchWorkers, len(readers)); worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for n := range jobs {
+				if workCtx.Err() != nil {
+					return
 				}
-			} else {
-				present := make(map[string]bool, len(keys))
-				for _, key := range keys {
-					present[key] = true
-				}
-				for key := range candidates {
-					if !present[key] {
-						delete(candidates, key)
-					}
-				}
-			}
-		}
-		for key := range candidates {
-			shadowed := false
-			for newer := n + 1; newer < len(readers); newer++ {
-				_, found, err := readDocument(ctx, readers[newer], key)
+				keys, err := searchSegment(workCtx, readers, n, queryTerms)
 				if err != nil {
-					return nil, err
+					errorOnce.Do(func() { firstError = err; cancel() })
+					return
 				}
-				if found {
-					shadowed = true
-					break
-				}
+				matches[n] = keys
 			}
-			if !shadowed {
-				result[key] = true
-			}
+		}()
+	}
+	wg.Wait()
+	if firstError != nil {
+		return nil, firstError
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	result := make(map[string]bool)
+	for _, keys := range matches {
+		for _, key := range keys {
+			result[key] = true
 		}
 	}
 	keys := make([]string, 0, len(result))
@@ -376,6 +369,61 @@ func (i *Index) Search(ctx context.Context, query string) ([]string, error) {
 	}
 	sort.Strings(keys)
 	return keys, nil
+}
+
+func searchSegment(ctx context.Context, readers []*segmentReader, n int, queryTerms []string) ([]string, error) {
+	var candidates map[string]bool
+	var documentKeys []string
+	for _, term := range queryTerms {
+		data, found, err := readers[n].lookup(ctx, "t"+term)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, nil
+		}
+		keys, err := readers[n].decodePosting(ctx, data, &documentKeys)
+		if err != nil {
+			return nil, err
+		}
+		if candidates == nil {
+			candidates = make(map[string]bool, len(keys))
+			for _, key := range keys {
+				candidates[key] = true
+			}
+		} else {
+			present := make(map[string]bool, len(keys))
+			for _, key := range keys {
+				present[key] = true
+			}
+			for key := range candidates {
+				if !present[key] {
+					delete(candidates, key)
+				}
+			}
+		}
+		if len(candidates) == 0 {
+			return nil, nil
+		}
+	}
+	result := make([]string, 0, len(candidates))
+	for key := range candidates {
+		shadowed := false
+		for newer := n + 1; newer < len(readers); newer++ {
+			_, found, err := readDocument(ctx, readers[newer], key)
+			if err != nil {
+				return nil, err
+			}
+			if found {
+				shadowed = true
+				break
+			}
+		}
+		if !shadowed {
+			result = append(result, key)
+		}
+	}
+	return result, nil
 }
 
 func segmentDocuments(ctx context.Context, reader *segmentReader) (map[string]indexedDocument, error) {

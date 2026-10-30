@@ -23,6 +23,7 @@ const legacySegmentVersion = 1
 const footerSize = 32
 const dictionaryBlockSize = 64
 const maxMetadataSize = 64 << 20
+const maxCachedDictionaryBytes = 128 << 10
 
 var segmentMagic = [8]byte{'Z', 'E', 'N', 'B', 'U', 'N', '0', '1'}
 
@@ -234,6 +235,9 @@ func readRange(ctx context.Context, store Store, key string, start, length int64
 }
 
 type segmentReader struct {
+	dictMu      sync.Mutex
+	dictCache   map[int][]dictionaryEntry
+	dictBytes   int
 	docMu       sync.Mutex
 	docKeys     []string
 	version     uint32
@@ -285,28 +289,49 @@ func (s *segmentReader) lookup(ctx context.Context, term string) ([]byte, bool, 
 	if index < 0 {
 		return nil, false, nil
 	}
-	block := s.blocks[index]
-	data, err := readRange(ctx, s.store, s.ref.Key, block.Offset, block.Length)
+	entries, err := s.dictionary(ctx, index)
 	if err != nil {
 		return nil, false, err
-	}
-	var entries []dictionaryEntry
-	if err := json.Unmarshal(data, &entries); err != nil || len(entries) == 0 || entries[0].Term != block.First {
-		return nil, false, errors.New("zenbun: invalid dictionary")
-	}
-	for i, entry := range entries {
-		if !utf8.ValidString(entry.Term) || !validExtent(entry.Offset, entry.Length, s.indexOffset) || entry.Length > maxMetadataSize || i > 0 && entries[i-1].Term >= entry.Term {
-			return nil, false, errors.New("zenbun: invalid dictionary entry")
-		}
 	}
 	i := sort.Search(len(entries), func(i int) bool { return entries[i].Term >= term })
 	if i == len(entries) || entries[i].Term != term {
 		return nil, false, nil
 	}
 	entry := entries[i]
-	data, err = readRange(ctx, s.store, s.ref.Key, entry.Offset, entry.Length)
+	data, err := readRange(ctx, s.store, s.ref.Key, entry.Offset, entry.Length)
 	if err != nil {
 		return nil, false, fmt.Errorf("zenbun: read segment entry: %w", err)
 	}
 	return data, true, nil
+}
+
+// dictionary caches validated immutable blocks up to a bounded size per reader.
+func (s *segmentReader) dictionary(ctx context.Context, index int) ([]dictionaryEntry, error) {
+	s.dictMu.Lock()
+	defer s.dictMu.Unlock()
+	if entries, found := s.dictCache[index]; found {
+		return entries, nil
+	}
+	block := s.blocks[index]
+	data, err := readRange(ctx, s.store, s.ref.Key, block.Offset, block.Length)
+	if err != nil {
+		return nil, err
+	}
+	var entries []dictionaryEntry
+	if err := json.Unmarshal(data, &entries); err != nil || len(entries) == 0 || entries[0].Term != block.First {
+		return nil, errors.New("zenbun: invalid dictionary")
+	}
+	for i, entry := range entries {
+		if !utf8.ValidString(entry.Term) || !validExtent(entry.Offset, entry.Length, s.indexOffset) || entry.Length > maxMetadataSize || i > 0 && entries[i-1].Term >= entry.Term {
+			return nil, errors.New("zenbun: invalid dictionary entry")
+		}
+	}
+	if len(data) <= maxCachedDictionaryBytes-s.dictBytes {
+		if s.dictCache == nil {
+			s.dictCache = make(map[int][]dictionaryEntry)
+		}
+		s.dictCache[index] = entries
+		s.dictBytes += len(data)
+	}
+	return entries, nil
 }
