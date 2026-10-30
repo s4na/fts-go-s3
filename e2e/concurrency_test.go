@@ -16,7 +16,7 @@ import (
 )
 
 type manifestBarrier struct {
-	base http.RoundTripper
+	base  http.RoundTripper
 	ready sync.WaitGroup
 }
 
