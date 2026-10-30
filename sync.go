@@ -24,7 +24,7 @@ func (i *Index) Sync(ctx context.Context, source Store, sourcePrefix string) err
 	}
 	indexed := make(map[string]indexedDocument)
 	for _, ref := range m.Segments {
-		reader, err := openSegment(ctx, i.store, ref)
+		reader, err := i.segment(ctx, ref)
 		if err != nil {
 			return err
 		}

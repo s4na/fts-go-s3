@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -19,6 +20,8 @@ const manifestVersion = 1
 type Index struct {
 	store  Store
 	prefix string
+	cacheMu sync.Mutex
+	cache map[string]*segmentReader
 }
 
 // Open configures an index. It does not create an object until the first write.
@@ -27,6 +30,30 @@ func Open(store Store, prefix string) (*Index, error) {
 		return nil, errors.New("zenbun: store and UTF-8 prefix are required")
 	}
 	return &Index{store: store, prefix: strings.TrimRight(prefix, "/") + "/"}, nil
+}
+
+// segment caches only immutable sparse indexes, never document or posting data.
+func (i *Index) segment(ctx context.Context, ref segmentRef) (*segmentReader, error) {
+	i.cacheMu.Lock()
+	reader := i.cache[ref.Key]
+	i.cacheMu.Unlock()
+	if reader != nil {
+		if reader.ref.Size != ref.Size || reader.ref.Documents != ref.Documents {
+			return nil, errors.New("zenbun: inconsistent segment reference")
+		}
+		return reader, nil
+	}
+	reader, err := openSegment(ctx, i.store, ref)
+	if err != nil {
+		return nil, err
+	}
+	i.cacheMu.Lock()
+	if i.cache == nil || len(i.cache) >= 1024 {
+		i.cache = make(map[string]*segmentReader)
+	}
+	i.cache[ref.Key] = reader
+	i.cacheMu.Unlock()
+	return reader, nil
 }
 
 type segmentRef struct {
@@ -230,7 +257,7 @@ func (i *Index) Search(ctx context.Context, query string) ([]string, error) {
 	}
 	readers := make([]*segmentReader, len(m.Segments))
 	for n, ref := range m.Segments {
-		readers[n], err = openSegment(ctx, i.store, ref)
+		readers[n], err = i.segment(ctx, ref)
 		if err != nil {
 			return nil, err
 		}
@@ -342,7 +369,7 @@ func (i *Index) Compact(ctx context.Context) (bool, error) {
 	}
 	docs := make(map[string]indexedDocument)
 	for _, ref := range m.Segments[at : at+2] {
-		reader, err := openSegment(ctx, i.store, ref)
+		reader, err := i.segment(ctx, ref)
 		if err != nil {
 			return false, err
 		}

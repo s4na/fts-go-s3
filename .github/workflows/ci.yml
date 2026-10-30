@@ -13,10 +13,6 @@ jobs:
         with:
           go-version: '1.26.10'
           cache: false
-      - name: Formatting
-        run: |
-          gofmt -d . | tee /tmp/gofmt.diff
-          test ! -s /tmp/gofmt.diff
       - run: go vet ./...
       - run: go test -race ./...
       - run: go test -run=^$ -fuzz=FuzzSegmentFooter -fuzztime=5s -parallel=2 .
@@ -26,3 +22,7 @@ jobs:
       - uses: golangci/golangci-lint-action@d583c34f0599d37dbac4a198b9c83201be380893 # v9.3.0
         with:
           version: v2.15.0
+      - name: Formatting
+        run: |
+          gofmt -d . | tee /tmp/gofmt.diff
+          test ! -s /tmp/gofmt.diff

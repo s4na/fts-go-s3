@@ -228,10 +228,10 @@ func FuzzManifest(f *testing.F) {
 
 type pausedReadStore struct {
 	Store
-	mu sync.Mutex
-	pause bool
+	mu      sync.Mutex
+	pause   bool
 	started chan struct{}
-	resume chan struct{}
+	resume  chan struct{}
 }
 
 func (s *pausedReadStore) Get(ctx context.Context, key string, r *ByteRange) (Object, error) {
@@ -260,8 +260,12 @@ func TestReclaimProtectsReaderAfterCompaction(t *testing.T) {
 	memory := &MemoryStore{}
 	store := &pausedReadStore{Store: memory, started: make(chan struct{}), resume: make(chan struct{})}
 	index, _ := Open(store, "index")
-	if err := index.Apply(ctx, []Change{{Key: "a", Data: []byte("cat")}}); err != nil { t.Fatal(err) }
-	if err := index.Apply(ctx, []Change{{Key: "b", Data: []byte("dog")}}); err != nil { t.Fatal(err) }
+	if err := index.Apply(ctx, []Change{{Key: "a", Data: []byte("cat")}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := index.Apply(ctx, []Change{{Key: "b", Data: []byte("dog")}}); err != nil {
+		t.Fatal(err)
+	}
 	memory.mu.Lock()
 	for key, obj := range memory.objects {
 		obj.time = time.Now().Add(-time.Hour)
@@ -274,12 +278,20 @@ func TestReclaimProtectsReaderAfterCompaction(t *testing.T) {
 	result := make(chan error, 1)
 	go func() {
 		keys, err := index.Search(ctx, "cat")
-		if err == nil && (len(keys) != 1 || keys[0] != "a") { err = fmt.Errorf("unexpected keys %v", keys) }
+		if err == nil && (len(keys) != 1 || keys[0] != "a") {
+			err = fmt.Errorf("unexpected keys %v", keys)
+		}
 		result <- err
 	}()
 	<-store.started
-	if changed, err := index.Compact(ctx); err != nil || !changed { t.Fatalf("compact: %v %v", changed, err) }
-	if removed, err := index.Reclaim(ctx, time.Minute); err != nil || removed != 0 { t.Fatalf("first reclaim: %d %v", removed, err) }
+	if changed, err := index.Compact(ctx); err != nil || !changed {
+		t.Fatalf("compact: %v %v", changed, err)
+	}
+	if removed, err := index.Reclaim(ctx, time.Minute); err != nil || removed != 0 {
+		t.Fatalf("first reclaim: %d %v", removed, err)
+	}
 	close(store.resume)
-	if err := <-result; err != nil { t.Fatal(err) }
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
 }
