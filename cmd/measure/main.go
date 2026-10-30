@@ -34,6 +34,22 @@ func (m *meter) Put(ctx context.Context, key string, data []byte, opts zenbun.Pu
 type document struct{ ID, Text string }
 type query struct{ Query string }
 
+// readRatio compares the index bytes read for all queries with a full scan of
+// the original UTF-8 document bytes for each query. A zero denominator is
+// represented as unavailable, rather than emitting invalid JSON numbers.
+func readRatio(sourceBytes, received int64, queries int) (fraction, inverse *float64) {
+	if sourceBytes <= 0 || received < 0 || queries <= 0 {
+		return nil, nil
+	}
+	value := (float64(received) / float64(queries)) / float64(sourceBytes)
+	fraction = &value
+	if value > 0 {
+		ratio := 1 / value
+		inverse = &ratio
+	}
+	return fraction, inverse
+}
+
 func run() error {
 	corpus := flag.String("corpus", "", "input JSONL corpus")
 	queries := flag.String("queries", "testdata/queries.json", "query JSON")
@@ -65,6 +81,7 @@ func run() error {
 	}
 	defer func() { _ = f.Close() }()
 	var docs []document
+	var sourceBytes int64
 	var changes []zenbun.Change
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 4096), 64<<20)
@@ -73,6 +90,7 @@ func run() error {
 		if err := json.Unmarshal(scanner.Bytes(), &doc); err != nil {
 			return err
 		}
+		sourceBytes += int64(len(doc.Text))
 		changes = append(changes, zenbun.Change{Key: doc.ID, Data: []byte(doc.Text)})
 		if len(changes) == *batch {
 			if err := index.Apply(ctx, changes); err != nil {
@@ -130,7 +148,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	metrics := map[string]any{"batch_size": *batch, "documents": len(docs), "queries": len(items), "false_negatives": 0, "search_gets": gets, "search_received_bytes": received, "gets_per_query": float64(gets) / float64(len(items)), "bytes_per_query": float64(received) / float64(len(items)), "single_update_puts": store.Puts, "manifest_bytes": len(manifest.Data), "build_seconds": buildTime.Seconds()}
+	fraction, inverse := readRatio(sourceBytes, received, len(items))
+	metrics := map[string]any{"source_document_bytes": sourceBytes, "index_to_full_scan_fraction": fraction, "full_scan_to_index_ratio": inverse, "batch_size": *batch, "documents": len(docs), "queries": len(items), "false_negatives": 0, "search_gets": gets, "search_received_bytes": received, "gets_per_query": float64(gets) / float64(len(items)), "bytes_per_query": float64(received) / float64(len(items)), "single_update_puts": store.Puts, "manifest_bytes": len(manifest.Data), "build_seconds": buildTime.Seconds()}
 	encoded, err := json.MarshalIndent(metrics, "", "  ")
 	if err != nil {
 		return err
