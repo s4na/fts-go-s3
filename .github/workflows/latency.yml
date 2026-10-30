@@ -1,6 +1,14 @@
 name: Latency and shard experiments
 on:
   pull_request:
+    paths:
+      - .github/workflows/latency.yml
+      - internal/index/**
+      - internal/tokenize/**
+      - cmd/indexbench/**
+      - scripts/prepare_data.py
+      - go.mod
+      - go.sum
   push:
     branches: [main]
   workflow_dispatch:
