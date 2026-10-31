@@ -607,14 +607,17 @@ func TestInvalidVersionTwoPostings(t *testing.T) {
 
 type countingSegmentStore struct {
 	Store
-	segmentGets int
+	segmentGets  int
+	segmentBytes int64
 }
 
 func (s *countingSegmentStore) Get(ctx context.Context, key string, r *ByteRange) (Object, error) {
+	obj, err := s.Store.Get(ctx, key, r)
 	if strings.Contains(key, "/segments/") {
 		s.segmentGets++
+		s.segmentBytes += int64(len(obj.Data))
 	}
-	return s.Store.Get(ctx, key, r)
+	return obj, err
 }
 
 func TestSyncReadsSegmentsNotDocuments(t *testing.T) {
@@ -631,12 +634,23 @@ func TestSyncReadsSegmentsNotDocuments(t *testing.T) {
 	if err := index.Sync(ctx, memory, "docs/"); err != nil {
 		t.Fatal(err)
 	}
+	m, _, err := index.loadManifest(ctx)
+	if err != nil || len(m.Segments) != 1 {
+		t.Fatalf("load segment: %+v %v", m.Segments, err)
+	}
+	if _, err := index.segment(ctx, m.Segments[0]); err != nil {
+		t.Fatal(err)
+	}
 	store.segmentGets = 0
+	store.segmentBytes = 0
 	if err := index.Sync(ctx, memory, "docs/"); err != nil {
 		t.Fatal(err)
 	}
 	if store.segmentGets > 3 {
 		t.Fatalf("unchanged sync issued %d segment GETs; want at most 3", store.segmentGets)
+	}
+	if store.segmentBytes >= m.Segments[0].Size {
+		t.Fatalf("unchanged sync read %d bytes from a %d-byte segment; expected postings to be omitted", store.segmentBytes, m.Segments[0].Size)
 	}
 }
 

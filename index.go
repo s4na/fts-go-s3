@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"sync"
@@ -378,21 +379,66 @@ func (i *Index) Search(ctx context.Context, query string) ([]string, error) {
 	return keys, nil
 }
 
+// segmentSnapshot presents the document and metadata ranges without copying
+// them into a second in-memory store. The postings gap is deliberately absent.
+type segmentSnapshot struct {
+	Store
+	key              string
+	head, tail       []byte
+	tailOffset, size int64
+}
+
+func (s *segmentSnapshot) Get(ctx context.Context, key string, r *ByteRange) (Object, error) {
+	if err := ctx.Err(); err != nil {
+		return Object{}, err
+	}
+	if key != s.key || r == nil || r.Start < 0 || r.End <= r.Start || r.End > s.size {
+		return Object{}, ErrInvalidRange
+	}
+	if r.End <= int64(len(s.head)) {
+		return Object{Data: s.head[r.Start:r.End]}, nil
+	}
+	if r.Start >= s.tailOffset {
+		return Object{Data: s.tail[r.Start-s.tailOffset : r.End-s.tailOffset]}, nil
+	}
+	return Object{}, io.ErrUnexpectedEOF
+}
+
 func segmentDocuments(ctx context.Context, reader *segmentReader) (map[string]indexedDocument, error) {
-	// Both Sync and Compact need every record. Fetching once avoids two remote
-	// range reads per document while retaining the existing validation path.
-	object, err := reader.store.Get(ctx, reader.ref.Key, nil)
+	// Dictionary blocks follow the data entries. Fetch them and the footer once,
+	// then read only the leading document entries, not the posting lists.
+	tailOffset := reader.blocks[0].Offset
+	for _, block := range reader.blocks {
+		if block.Offset < tailOffset {
+			tailOffset = block.Offset
+		}
+	}
+	tail, err := readRange(ctx, reader.store, reader.ref.Key, tailOffset, reader.ref.Size-tailOffset)
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(object.Data)) != reader.ref.Size {
-		return nil, errors.New("zenbun: invalid segment size")
+	headEnd := tailOffset
+	for _, block := range reader.blocks {
+		start := block.Offset - tailOffset
+		var entries []dictionaryEntry
+		if err := json.Unmarshal(tail[start:start+block.Length], &entries); err != nil || len(entries) == 0 || entries[0].Term != block.First {
+			return nil, errors.New("zenbun: invalid dictionary")
+		}
+		for n, entry := range entries {
+			if !utf8.ValidString(entry.Term) || !validExtent(entry.Offset, entry.Length, reader.indexOffset) || entry.Length > maxMetadataSize || n > 0 && entries[n-1].Term >= entry.Term {
+				return nil, errors.New("zenbun: invalid dictionary entry")
+			}
+			if strings.HasPrefix(entry.Term, "t") && entry.Offset < headEnd {
+				headEnd = entry.Offset
+			}
+		}
 	}
-	memory := &MemoryStore{}
-	if _, err := memory.Put(ctx, reader.ref.Key, object.Data, PutOptions{}); err != nil {
+	head, err := readRange(ctx, reader.store, reader.ref.Key, 0, headEnd)
+	if err != nil {
 		return nil, err
 	}
-	reader, err = openSegment(ctx, memory, reader.ref)
+	snapshot := &segmentSnapshot{Store: reader.store, key: reader.ref.Key, head: head, tail: tail, tailOffset: tailOffset, size: reader.ref.Size}
+	reader, err = openSegment(ctx, snapshot, reader.ref)
 	if err != nil {
 		return nil, err
 	}
