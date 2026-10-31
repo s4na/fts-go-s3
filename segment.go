@@ -250,15 +250,15 @@ func readRange(ctx context.Context, store Store, key string, start, length int64
 }
 
 type segmentReader struct {
-	docMu        sync.Mutex
-	docBlocks    map[int][]string
-	docBytes     int
-	version      uint32
-	store        Store
-	ref          segmentRef
-	blocks       []blockIndex
-	bloom        []byte
-	indexOffset  int64
+	docMu       sync.Mutex
+	docBlocks   map[int][]string
+	docBytes    int
+	version     uint32
+	store       Store
+	ref         segmentRef
+	blocks      []blockIndex
+	bloom       []byte
+	indexOffset int64
 }
 
 func openSegment(ctx context.Context, store Store, ref segmentRef) (*segmentReader, error) {
