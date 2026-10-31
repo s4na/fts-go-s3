@@ -8,8 +8,47 @@ import (
 	"time"
 
 	zenbun "github.com/s4na/fts-go-s3"
+	"github.com/s4na/fts-go-s3/gcsstore"
 	"github.com/s4na/fts-go-s3/s3store"
 )
+
+// storageConfig holds connection flags. Empty endpoint and bucket fall back to
+// environment variables named for the selected storage.
+type storageConfig struct {
+	kind, endpoint, bucket, region string
+	virtualHost                    bool
+}
+
+func newStore(config storageConfig) (zenbun.Store, error) {
+	switch config.kind {
+	case "s3":
+		return s3store.NewS3Store(s3store.S3Config{
+			Endpoint:    firstNonEmpty(config.endpoint, os.Getenv("S3_ENDPOINT")),
+			Bucket:      firstNonEmpty(config.bucket, os.Getenv("S3_BUCKET")),
+			Region:      firstNonEmpty(config.region, os.Getenv("AWS_REGION")),
+			VirtualHost: config.virtualHost,
+		})
+	case "gcs":
+		if config.region != "" || config.virtualHost {
+			return nil, fmt.Errorf("-region and -virtual-host apply only to s3")
+		}
+		return gcsstore.NewGCSStore(gcsstore.GCSConfig{
+			Endpoint: firstNonEmpty(config.endpoint, os.Getenv("GCS_ENDPOINT")),
+			Bucket:   firstNonEmpty(config.bucket, os.Getenv("GCS_BUCKET")),
+		})
+	default:
+		return nil, fmt.Errorf("unknown storage %q (want s3 or gcs)", config.kind)
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
 
 func run(args []string) error {
 	if len(args) == 0 {
@@ -17,17 +56,19 @@ func run(args []string) error {
 	}
 	command := args[0]
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
-	endpoint := flags.String("endpoint", os.Getenv("S3_ENDPOINT"), "S3 endpoint URL")
-	bucket := flags.String("bucket", os.Getenv("S3_BUCKET"), "S3 bucket")
-	region := flags.String("region", os.Getenv("AWS_REGION"), "S3 region")
+	var config storageConfig
+	flags.StringVar(&config.kind, "storage", firstNonEmpty(os.Getenv("ZENBUN_STORAGE"), "s3"), "storage adapter: s3 or gcs")
+	flags.StringVar(&config.endpoint, "endpoint", "", "endpoint URL (default $S3_ENDPOINT or $GCS_ENDPOINT)")
+	flags.StringVar(&config.bucket, "bucket", "", "bucket (default $S3_BUCKET or $GCS_BUCKET)")
+	flags.StringVar(&config.region, "region", "", "S3 region (default $AWS_REGION)")
 	prefix := flags.String("index", "zenbun-index/", "index prefix")
 	source := flags.String("source", "documents/", "source prefix for sync")
-	virtual := flags.Bool("virtual-host", false, "use virtual-host addressing")
+	flags.BoolVar(&config.virtualHost, "virtual-host", false, "use S3 virtual-host addressing")
 	grace := flags.Duration("grace", 24*time.Hour, "reclaim grace period")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
-	store, err := s3store.NewS3Store(s3store.S3Config{Endpoint: *endpoint, Bucket: *bucket, Region: *region, VirtualHost: *virtual})
+	store, err := newStore(config)
 	if err != nil {
 		return err
 	}

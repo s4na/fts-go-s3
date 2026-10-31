@@ -1,14 +1,16 @@
 # ストレージ互換性
 
-必要な機能は Range GET、ListObjectsV2、原子的な条件付き PUT、Delete と強い読み取り・一覧整合性です。対応の根拠は CI の `S3 compatibility` ジョブです。
+必要な機能は Range GET、プレフィックスによる一覧、原子的な条件付き PUT、Delete と強い読み取り・一覧整合性です。対応の根拠は CI の `Storage compatibility` ワークフローです。各アダプターは共通の契約テスト `storetest.Run` を通しています。
 
 | ストレージ | CI での検証 |
 |---|---|
 | VersityGW | Range、一覧、条件付き作成・更新の競合、同期と検索 |
 | SeaweedFS | Range、一覧、条件付き作成・更新の競合、同期と検索 |
 | Amazon S3 | 未検証。互換 API と条件付き書き込みの動作を利用者側で検証してください |
+| fake-gcs-server（`gcsstore`） | Range、一覧、条件付き作成・更新の競合、同期と検索 |
+| Google Cloud Storage | 未検証。`gcsstore` は JSON API と generation による条件付き書き込みを使います |
 
-CI は [VersityGW](../.github/ci/versity/Dockerfile) と [SeaweedFS](../.github/ci/seaweedfs/Dockerfile) の Dockerfile でバージョンとダイジェストを固定して試験します。Dependabot は公開から 7 日の待機後に更新します。検証したバージョン以外の互換性を保証するものではありません。署名 v4、パス形式とバーチャルホスト形式を実装していますが、CI の互換ストレージ試験はパス形式です。
+CI は [VersityGW](../.github/ci/versity/Dockerfile) と [SeaweedFS](../.github/ci/seaweedfs/Dockerfile) の Dockerfile でバージョンとダイジェストを固定して試験します。fake-gcs-server は [ワークフロー](../.github/workflows/e2e.yml) で Go モジュールのバージョンを固定し、チェックサムデータベースで検証して起動します。Dependabot は公開から 7 日の待機後に更新します。検証したバージョン以外の互換性を保証するものではありません。署名 v4、パス形式とバーチャルホスト形式を実装していますが、CI の互換ストレージ試験はパス形式です。
 
 ## Store の契約と使う機能
 

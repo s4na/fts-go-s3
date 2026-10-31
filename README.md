@@ -1,9 +1,9 @@
 # zenbun
 
-**S3 互換ストレージに置いた UTF-8 テキストを、同じバケット上の索引で部分文字列検索する Go ライブラリと CLI です。**
+**S3 互換ストレージや Google Cloud Storage に置いた UTF-8 テキストを、同じバケット上の索引で部分文字列検索する Go ライブラリと CLI です。**
 
 [![CI](https://github.com/s4na/fts-go-s3/actions/workflows/ci.yml/badge.svg)](https://github.com/s4na/fts-go-s3/actions/workflows/ci.yml)
-[![S3 compatibility](https://github.com/s4na/fts-go-s3/actions/workflows/e2e.yml/badge.svg)](https://github.com/s4na/fts-go-s3/actions/workflows/e2e.yml)
+[![Storage compatibility](https://github.com/s4na/fts-go-s3/actions/workflows/e2e.yml/badge.svg)](https://github.com/s4na/fts-go-s3/actions/workflows/e2e.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 - **サーバー不要**：索引もバケットに置きます。検索時は索引の必要な部分だけを Range GET で読みます。
@@ -128,7 +128,9 @@ zenbun compact -index indexes/articles/
 - [候補を本文で確認する](#候補を本文で確認する)
 - [同時更新と競合](#同時更新と競合)
 - [索引の手入れ](#索引の手入れ)
+- [ストレージアダプター](#ストレージアダプター)
 - [S3 の設定](#s3-の設定)
+- [GCS の設定](#gcs-の設定)
 - [コマンドライン](#コマンドライン)
 - [制限](#制限)
 - [検証状況と性能](#検証状況と性能)
@@ -339,6 +341,36 @@ stateDiagram-v2
 zenbun reclaim -index indexes/articles/ -grace 24h
 ```
 
+## ストレージアダプター
+
+索引と検索の本体は特定のストレージに依存しません。読み書きはすべて `zenbun.Store` インターフェース（`Get` / `Put` / `Delete` / `List`）を通るので、アダプターを差し替えるだけで保存先を切り替えられます。
+
+| アダプター | パッケージ | 用途 |
+|---|---|---|
+| `MemoryStore` | `zenbun` | テストや試用 |
+| `S3Store` | `github.com/s4na/fts-go-s3/s3store` | Amazon S3 と S3 互換ストレージ（MinIO、Cloudflare R2、VersityGW、SeaweedFS など） |
+| `GCSStore` | `github.com/s4na/fts-go-s3/gcsstore` | Google Cloud Storage（JSON API） |
+
+```go
+var store zenbun.Store
+var err error
+switch backend {
+case "gcs":
+    store, err = gcsstore.NewGCSStore(gcsstore.GCSConfig{Bucket: "example-bucket", HTTPClient: authenticatedClient})
+default:
+    store, err = s3store.NewS3Store(s3store.S3Config{Endpoint: "https://s3.example.com", Bucket: "example-bucket"})
+}
+index, err := zenbun.Open(store, "indexes/articles/")
+```
+
+ほかのストレージを使う場合は、`zenbun.Store` を実装してください。条件付き PUT が複数の書き手に対して原子的に働くこと、ETag（版の識別子）を `Get` / `Put` / `List` で同じ値として返すことが必要です。実装が契約を満たすかは、`storetest.Run` で確かめられます。同梱のアダプターも CI で同じテストを通しています。
+
+```go
+func TestMyStore(t *testing.T) {
+    storetest.Run(t, newEmptyMyStore(t)) // 空のバケットや名前空間を渡す
+}
+```
+
 ## S3 の設定
 
 - **認証**：`S3Config` の `AccessKey` / `SecretKey` / `SessionToken`、または環境変数 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` の静的認証情報を使います。IAM ロールや IMDS には対応していません。認証情報はリポジトリに書き込まないでください。
@@ -347,7 +379,23 @@ zenbun reclaim -index indexes/articles/ -grace 24h
 - **必要な機能**：Range GET、一覧、削除、原子的な条件付き PUT、強い読み取り・一覧整合性が必要です。CI では VersityGW と SeaweedFS で検証しています。Amazon S3 自体はまだ検証していません。
 - **詳細**：IAM 権限・プレフィックス・競合は [S3 運用上の前提](docs/storage-operations.md) を、`Store` の契約と対応ストレージは [ストレージ互換性](docs/compatibility.md) を参照してください。
 
-独自のストレージを使う場合は、`zenbun.Store` インターフェース（`Get` / `Put` / `Delete` / `List`）を実装してください。
+## GCS の設定
+
+```go
+import (
+    "golang.org/x/oauth2/google"
+    "github.com/s4na/fts-go-s3/gcsstore"
+)
+
+client, err := google.DefaultClient(ctx, "https://www.googleapis.com/auth/devstorage.read_write")
+store, err := gcsstore.NewGCSStore(gcsstore.GCSConfig{Bucket: "example-bucket", HTTPClient: client})
+```
+
+- **認証**：認証済みの `HTTPClient`（上の例ではアプリケーションのデフォルト認証情報）を渡すと、トークンの更新もそのクライアントに任せます。`golang.org/x/oauth2` は zenbun の依存ではないので、使う側で追加してください。短時間の作業なら、`AccessToken` に OAuth 2.0 アクセストークンを直接渡すこともできます。どちらも指定しない場合は、環境変数 `GOOGLE_OAUTH_ACCESS_TOKEN` を読みます。
+- **ETag**：GCS のオブジェクトの generation を ETag として使い、条件付き PUT は `ifGenerationMatch` で行います。内容が同じでも上書きすると generation は変わるため、`Sync` はその文書を読み直します。
+- **接続先**：標準は `https://storage.googleapis.com` です。エミュレーターなどを使う場合は `Endpoint` を指定してください。
+- **HTTP**：`HTTPClient` を省略した場合のタイムアウトは 30 秒です。
+- **検証状況**：CI では [fake-gcs-server](https://github.com/fsouza/fake-gcs-server) で検証しています。Google Cloud Storage 本体ではまだ検証していません。
 
 ## コマンドライン
 
@@ -362,7 +410,16 @@ go install github.com/s4na/fts-go-s3/cmd/zenbun@latest
 | `zenbun compact -index <prefix>` | まとめられるセグメントがなくなるまでコンパクション |
 | `zenbun reclaim -index <prefix> -grace <期間>` | 不要なセグメントを回収（`-grace` は `24h` や `90m` の形式、既定値 `24h`） |
 
-共通オプションは `-endpoint`、`-bucket`、`-region`、`-virtual-host` です。最初の 3 つは、省略すると `S3_ENDPOINT`、`S3_BUCKET`、`AWS_REGION` の値を使います。`zenbun` が見つからない場合は、`$(go env GOPATH)/bin` が PATH に含まれているか確認してください。キーに改行を含む場合は、出力を区別しやすい Go API を使ってください。
+`-storage` で保存先のアダプターを `s3`（既定）か `gcs` から選びます。省略すると環境変数 `ZENBUN_STORAGE` の値を使います。
+
+| オプション | `s3` で省略したとき | `gcs` で省略したとき |
+|---|---|---|
+| `-endpoint` | `S3_ENDPOINT` | `GCS_ENDPOINT`、なければ `https://storage.googleapis.com` |
+| `-bucket` | `S3_BUCKET` | `GCS_BUCKET` |
+| `-region` | `AWS_REGION` | 指定するとエラー |
+| `-virtual-host` | パス形式 | 指定するとエラー |
+
+GCS の認証には、環境変数 `GOOGLE_OAUTH_ACCESS_TOKEN` のアクセストークンを使います（例：`export GOOGLE_OAUTH_ACCESS_TOKEN="$(gcloud auth print-access-token)"`）。トークンには有効期限（通常 1 時間）があります。`zenbun` が見つからない場合は、`$(go env GOPATH)/bin` が PATH に含まれているか確認してください。キーに改行を含む場合は、出力を区別しやすい Go API を使ってください。
 
 ## 制限
 
@@ -396,9 +453,9 @@ CI の [Corpus oracle and measurements](.github/workflows/oracle.yml) は、Wiki
 
 ## 開発
 
-CI は単体テスト、S3 互換ストレージでの E2E テスト、コーパスを使った照合と計測を実行します。
+CI は単体テスト、S3 互換ストレージと fake-gcs-server での E2E テスト、コーパスを使った照合と計測を実行します。
 
-Dependabot は、Go モジュール・GitHub Actions・CI のストレージイメージの更新を毎週確認し、リリースから 7 日以上たった版を提案します。セキュリティ更新は GitHub の仕様により、この待機期間の対象外です。GitHub Actions の依存は `.github/workflows/actions.lock` に記録しています。Action を追加・変更した場合は、`gh-actions-lock` 拡張で lockfile を更新してください。
+Dependabot は、Go モジュール・GitHub Actions・CI のストレージイメージの更新を毎週確認し、リリースから 7 日以上たった版を提案します。セキュリティ更新は GitHub の仕様により、この待機期間の対象外です。E2E テストで使う fake-gcs-server の版は `.github/workflows/e2e.yml` で固定しており、Dependabot の対象外です。GitHub Actions の依存は `.github/workflows/actions.lock` に記録しています。Action を追加・変更した場合は、`gh-actions-lock` 拡張で lockfile を更新してください。
 
 ## ライセンス
 
