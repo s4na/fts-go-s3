@@ -1,11 +1,13 @@
 package zenbun
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -556,5 +558,237 @@ func TestReclaimExcludesWritesAfterBarrier(t *testing.T) {
 	markers, err := memory.List(ctx, "index/retired/")
 	if err != nil || len(markers) != 0 {
 		t.Fatalf("new publication marked: %v %v", markers, err)
+	}
+}
+
+func TestMixedSegmentVersions(t *testing.T) {
+	ctx := context.Background()
+	store := &MemoryStore{}
+	old, err := encodeSegmentVersion(map[string]indexedDocument{
+		"old": {Terms: terms("猫と犬")},
+	}, legacySegmentVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Put(ctx, "index/segments/old", old, PutOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := json.Marshal(manifest{
+		Version: manifestVersion, Generation: "old",
+		Segments: []segmentRef{{Key: "index/segments/old", Size: int64(len(old)), Documents: 1}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Put(ctx, "index/manifest", initial, PutOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	index, err := Open(store, "index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := index.Apply(ctx, []Change{{Key: "new", Data: []byte("猫と魚")}}); err != nil {
+		t.Fatal(err)
+	}
+	assertOracle(t, index, map[string]string{"old": "猫と犬", "new": "猫と魚"}, []string{"猫", "猫と", "犬", "魚"})
+	if ok, err := index.Compact(ctx); err != nil || !ok {
+		t.Fatalf("compact mixed versions: %t, %v", ok, err)
+	}
+	assertOracle(t, index, map[string]string{"old": "猫と犬", "new": "猫と魚"}, []string{"猫", "猫と", "犬", "魚"})
+}
+
+func TestInvalidVersionTwoPostings(t *testing.T) {
+	reader := &segmentReader{version: segmentVersion, ref: segmentRef{Documents: 2}}
+	for _, data := range [][]byte{{0}, {3}, {1, 0}, {0x80}, {1, 2}, {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 2}} {
+		if _, err := reader.decodePosting(context.Background(), data); err == nil {
+			t.Errorf("accepted invalid posting %x", data)
+		}
+	}
+}
+
+func TestDefaultWriterUsesVersionTwo(t *testing.T) {
+	ctx := context.Background()
+	writer, err := Open(&MemoryStore{}, "index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Apply(ctx, []Change{{Key: "one", Data: []byte("猫")}}); err != nil {
+		t.Fatal(err)
+	}
+	m, _, err := writer.loadManifest(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := writer.segment(ctx, m.Segments[0])
+	if err != nil || r.version != segmentVersion {
+		t.Fatalf("default writer must use v2: reader=%+v error=%v", r, err)
+	}
+}
+
+type documentBlockMeter struct {
+	Store
+	bytes    int64
+	gets     int
+	maxRange int64
+}
+
+func (s *documentBlockMeter) Get(ctx context.Context, key string, r *ByteRange) (Object, error) {
+	obj, err := s.Store.Get(ctx, key, r)
+	s.bytes += int64(len(obj.Data))
+	s.gets++
+	if r != nil && r.End-r.Start > s.maxRange {
+		s.maxRange = r.End - r.Start
+	}
+	return obj, err
+}
+
+func TestSparseSearchOnLargeSegment(t *testing.T) {
+	const count = 10000
+	ctx := context.Background()
+	store := &documentBlockMeter{Store: &MemoryStore{}}
+	index, err := Open(store, "index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes := make([]Change, 0, count)
+	for n := 0; n < count; n++ {
+		text := "一般的な文書"
+		if n == count-1 {
+			text = "希少語"
+		}
+		changes = append(changes, Change{Key: fmt.Sprintf("docs/%08d", n), Data: []byte(text)})
+	}
+	if err := index.Apply(ctx, changes); err != nil {
+		t.Fatal(err)
+	}
+	m, _, err := index.loadManifest(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.bytes = 0
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+	got, err := index.Search(ctx, "希少語")
+	if err != nil || len(got) != 1 || got[0] != "docs/00009999" {
+		t.Fatalf("search: %q, %v", got, err)
+	}
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	r, err := index.segment(ctx, m.Segments[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.docBlocks) != 1 || r.docBytes > maxDocumentCacheBytes {
+		t.Fatalf("document cache must contain one bounded block: %d blocks, %d bytes", len(r.docBlocks), r.docBytes)
+	}
+	if store.bytes >= m.Segments[0].Size/4 {
+		t.Fatalf("sparse read too large: %d of %d bytes", store.bytes, m.Segments[0].Size)
+	}
+	t.Logf("docs=%d segment_bytes=%d first_query_bytes=%d cache_encoded_bytes=%d go_heap_before=%d go_heap_after=%d go_sys_after=%d", count, m.Segments[0].Size, store.bytes, r.docBytes, before.HeapAlloc, after.HeapAlloc, after.Sys)
+}
+
+func TestSearchReadsOversizedBlockOnlyOnce(t *testing.T) {
+	ctx := context.Background()
+	store := &documentBlockMeter{Store: &MemoryStore{}}
+	index, err := Open(store, "index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes := make([]Change, 0, documentBlockSize)
+	prefix := strings.Repeat("x", 300)
+	for n := 0; n < documentBlockSize; n++ {
+		changes = append(changes, Change{Key: fmt.Sprintf("%s/%04d", prefix, n), Data: []byte("猫")})
+	}
+	if err := index.Apply(ctx, changes); err != nil {
+		t.Fatal(err)
+	}
+	store.gets = 0
+	keys, err := index.Search(ctx, "猫")
+	if err != nil || len(keys) != documentBlockSize {
+		t.Fatalf("search: %d, %v", len(keys), err)
+	}
+	if store.gets > 10 {
+		t.Fatalf("oversized block was reread: %d GETs", store.gets)
+	}
+}
+
+func TestVersionTwoRejectsMissingDocumentBlocks(t *testing.T) {
+	ctx := context.Background()
+	data, err := encodeSegmentVersion(map[string]indexedDocument{"old": {Terms: terms("猫")}}, segmentVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offset, length, err := parseFooter(data[len(data)-footerSize:], int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := data[offset : offset+length]
+	old := []byte(`"doc_block_size":256`)
+	replacement := []byte(`"doc_block_size":  0`)
+	if !bytes.Contains(index, old) || len(old) != len(replacement) {
+		t.Fatal("unexpected index metadata")
+	}
+	copy(index, bytes.Replace(index, old, replacement, 1))
+	store := &MemoryStore{}
+	if _, err := store.Put(ctx, "index/segments/old", data, PutOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = openSegment(ctx, store, segmentRef{Key: "index/segments/old", Size: int64(len(data)), Documents: 1})
+	if err == nil {
+		t.Fatal("v2 segment without document blocks must be rejected")
+	}
+}
+
+func TestFrequentTermReadsDocumentBlocksInBatches(t *testing.T) {
+	const count = 10000
+	ctx := context.Background()
+	store := &documentBlockMeter{Store: &MemoryStore{}}
+	index, err := Open(store, "index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes := make([]Change, 0, count)
+	for n := 0; n < count; n++ {
+		changes = append(changes, Change{Key: fmt.Sprintf("docs/%08d", n), Data: []byte("日本語の猫")})
+	}
+	if err := index.Apply(ctx, changes); err != nil {
+		t.Fatal(err)
+	}
+	store.gets = 0
+	store.bytes = 0
+	keys, err := index.Search(ctx, "猫")
+	if err != nil || len(keys) != count {
+		t.Fatalf("frequent-term search: got %d keys, error %v", len(keys), err)
+	}
+	if store.gets > 16 {
+		t.Fatalf("document block reads were not batched: %d GETs", store.gets)
+	}
+	t.Logf("frequent-term search: documents=%d GETs=%d bytes=%d", count, store.gets, store.bytes)
+}
+
+func TestDocumentBlockBatchesRespectReadLimit(t *testing.T) {
+	const count = 3 * documentBlockSize
+	ctx := context.Background()
+	store := &documentBlockMeter{Store: &MemoryStore{}}
+	index, err := Open(store, "index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes := make([]Change, 0, count)
+	prefix := strings.Repeat("長", 500)
+	for n := 0; n < count; n++ {
+		changes = append(changes, Change{Key: fmt.Sprintf("%s/%04d", prefix, n), Data: []byte("猫")})
+	}
+	if err := index.Apply(ctx, changes); err != nil {
+		t.Fatal(err)
+	}
+	store.maxRange = 0
+	keys, err := index.Search(ctx, "猫")
+	if err != nil || len(keys) != count {
+		t.Fatalf("large document-block search: got %d keys, error %v", len(keys), err)
+	}
+	if store.maxRange > 1<<20 {
+		t.Fatalf("document block range exceeds batch limit: %d bytes", store.maxRange)
 	}
 }
