@@ -157,19 +157,13 @@ zenbun compact -index indexes/articles/
 
 ```mermaid
 flowchart LR
-    subgraph 更新
-        direction LR
-        U1["文書を変更"] --> U2["Sync / Apply"]
-        U2 --> U3["新しいセグメントを保存"]
-        U3 --> U4["manifest を<br>条件付き PUT で差し替え"]
-    end
-    subgraph 検索
-        direction LR
-        S1["検索文字列"] --> S2["manifest を読む"]
-        S2 --> S3["必要な辞書と<br>ポスティングだけ Range GET"]
-        S3 --> S4["候補キー"]
-        S4 -. 必要なら .-> S5["本文で確認"]
-    end
+    U1(["更新"]) --> U2["Sync / Apply"]
+    U2 --> U3["新しいセグメントを保存"]
+    U3 --> U4["manifest を条件付き PUT"]
+    S1(["検索"]) --> S2["manifest を読む"]
+    S2 --> S3["必要な部分だけ Range GET"]
+    S3 --> S4["候補キー"]
+    S4 -. 必要なら .-> S5["本文で確認"]
 ```
 
 文書と検索文字列は、**NFKC 正規化**のあと小文字化します。たとえば `ＡＢＣ` と `abc` は同じ扱いです。そのうえで 2 文字ずつの組（**文字 bi-gram**）に分けて索引に記録します。1 文字の検索には 1 文字単位の記録（uni-gram）を使います。
