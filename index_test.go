@@ -583,7 +583,7 @@ func TestMixedSegmentVersions(t *testing.T) {
 	if _, err := store.Put(ctx, "index/manifest", initial, PutOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	index, err := Open(store, "index", WithSegmentVersion(2))
+	index, err := Open(store, "index")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,7 +598,7 @@ func TestMixedSegmentVersions(t *testing.T) {
 }
 
 func TestInvalidVersionTwoPostings(t *testing.T) {
-	reader := &segmentReader{version: segmentVersion, docBlockSize: documentBlockSize, ref: segmentRef{Documents: 2}}
+	reader := &segmentReader{version: segmentVersion, ref: segmentRef{Documents: 2}}
 	for _, data := range [][]byte{{0}, {3}, {1, 0}, {0x80}, {1, 2}, {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 2}} {
 		if _, err := reader.decodePosting(context.Background(), data); err == nil {
 			t.Errorf("accepted invalid posting %x", data)
@@ -606,10 +606,9 @@ func TestInvalidVersionTwoPostings(t *testing.T) {
 	}
 }
 
-func TestWriteVersionRollout(t *testing.T) {
+func TestDefaultWriterUsesVersionTwo(t *testing.T) {
 	ctx := context.Background()
-	store := &MemoryStore{}
-	writer, err := Open(store, "index")
+	writer, err := Open(&MemoryStore{}, "index")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -621,27 +620,8 @@ func TestWriteVersionRollout(t *testing.T) {
 		t.Fatal(err)
 	}
 	r, err := writer.segment(ctx, m.Segments[0])
-	if err != nil || r.version != legacySegmentVersion {
-		t.Fatalf("default writer must use v1: reader=%+v error=%v", r, err)
-	}
-	writer, err = Open(store, "index", WithSegmentVersion(2))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := writer.Apply(ctx, []Change{{Key: "two", Data: []byte("犬")}}); err != nil {
-		t.Fatal(err)
-	}
-	m, _, err = writer.loadManifest(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r, err = writer.segment(ctx, m.Segments[1])
 	if err != nil || r.version != segmentVersion {
-		t.Fatalf("opt-in writer must use v2: reader=%+v error=%v", r, err)
-	}
-	assertOracle(t, writer, map[string]string{"one": "猫", "two": "犬"}, []string{"猫", "犬"})
-	if _, err := Open(store, "index", WithSegmentVersion(3)); err == nil {
-		t.Fatal("invalid writer version accepted")
+		t.Fatalf("default writer must use v2: reader=%+v error=%v", r, err)
 	}
 }
 
@@ -662,7 +642,7 @@ func TestSparseSearchOnLargeSegment(t *testing.T) {
 	const count = 10000
 	ctx := context.Background()
 	store := &documentBlockMeter{Store: &MemoryStore{}}
-	index, err := Open(store, "index", WithSegmentVersion(2))
+	index, err := Open(store, "index")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -707,7 +687,7 @@ func TestSparseSearchOnLargeSegment(t *testing.T) {
 func TestSearchReadsOversizedBlockOnlyOnce(t *testing.T) {
 	ctx := context.Background()
 	store := &documentBlockMeter{Store: &MemoryStore{}}
-	index, err := Open(store, "index", WithSegmentVersion(2))
+	index, err := Open(store, "index")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -729,7 +709,7 @@ func TestSearchReadsOversizedBlockOnlyOnce(t *testing.T) {
 	}
 }
 
-func TestUnblockedVersionTwoSegmentsRemainReadable(t *testing.T) {
+func TestVersionTwoRejectsMissingDocumentBlocks(t *testing.T) {
 	ctx := context.Background()
 	data, err := encodeSegmentVersion(map[string]indexedDocument{"old": {Terms: terms("猫")}}, segmentVersion)
 	if err != nil {
@@ -750,19 +730,8 @@ func TestUnblockedVersionTwoSegmentsRemainReadable(t *testing.T) {
 	if _, err := store.Put(ctx, "index/segments/old", data, PutOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	m, err := json.Marshal(manifest{Version: manifestVersion, Generation: "test", Segments: []segmentRef{{Key: "index/segments/old", Size: int64(len(data)), Documents: 1}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Put(ctx, "index/manifest", m, PutOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	reader, err := Open(store, "index")
-	if err != nil {
-		t.Fatal(err)
-	}
-	keys, err := reader.Search(ctx, "猫")
-	if err != nil || len(keys) != 1 || keys[0] != "old" {
-		t.Fatalf("legacy v2 search: %q, %v", keys, err)
+	_, err = openSegment(ctx, store, segmentRef{Key: "index/segments/old", Size: int64(len(data)), Documents: 1})
+	if err == nil {
+		t.Fatal("v2 segment without document blocks must be rejected")
 	}
 }

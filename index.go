@@ -19,44 +19,18 @@ const manifestVersion = 1
 
 // Index stores immutable segments under a prefix, separate from source documents.
 type Index struct {
-	store        Store
-	prefix       string
-	writeVersion uint32
-	cacheMu      sync.Mutex
-	cache        map[string]*segmentReader
-}
-
-// OpenOption configures how an index writes new segments.
-type OpenOption func(*Index) error
-
-// WithSegmentVersion selects the version used for newly written segments.
-// Version 1 remains the default until every reader supports version 2.
-func WithSegmentVersion(version uint32) OpenOption {
-	return func(i *Index) error {
-		if version != legacySegmentVersion && version != segmentVersion {
-			return errors.New("zenbun: unsupported segment write version")
-		}
-		i.writeVersion = version
-		return nil
-	}
+	store   Store
+	prefix  string
+	cacheMu sync.Mutex
+	cache   map[string]*segmentReader
 }
 
 // Open configures an index. It does not create an object until the first write.
-// It reads supported versions and writes v1 unless WithSegmentVersion opts in.
-func Open(store Store, prefix string, options ...OpenOption) (*Index, error) {
+func Open(store Store, prefix string) (*Index, error) {
 	if store == nil || prefix == "" || !utf8.ValidString(prefix) {
 		return nil, errors.New("zenbun: store and UTF-8 prefix are required")
 	}
-	index := &Index{store: store, prefix: strings.TrimRight(prefix, "/") + "/", writeVersion: legacySegmentVersion}
-	for _, option := range options {
-		if option == nil {
-			return nil, errors.New("zenbun: nil open option")
-		}
-		if err := option(index); err != nil {
-			return nil, err
-		}
-	}
-	return index, nil
+	return &Index{store: store, prefix: strings.TrimRight(prefix, "/") + "/"}, nil
 }
 
 // segment caches only immutable sparse indexes, never document or posting data.
@@ -151,7 +125,7 @@ func (i *Index) publish(ctx context.Context, m manifest, etag string) error {
 }
 
 func (i *Index) writeSegment(ctx context.Context, docs map[string]indexedDocument) (segmentRef, error) {
-	data, err := encodeSegmentVersion(docs, i.writeVersion)
+	data, err := encodeSegment(docs)
 	if err != nil {
 		return segmentRef{}, err
 	}
@@ -289,22 +263,6 @@ func (reader *segmentReader) decodePosting(ctx context.Context, data []byte) ([]
 	if reader.version == legacySegmentVersion {
 		return decodeList(data)
 	}
-	var legacyKeys []string
-	if reader.docBlockSize == 0 {
-		// Early v2 segments used a single JSON table. Read them without caching
-		// the potentially large table for the lifetime of the reader.
-		table, found, err := reader.lookup(ctx, "a")
-		if err != nil {
-			return nil, err
-		}
-		if !found {
-			return nil, errors.New("zenbun: missing segment document list")
-		}
-		legacyKeys, err = decodeList(table)
-		if err != nil || len(legacyKeys) != reader.ref.Documents {
-			return nil, errors.New("zenbun: invalid segment document table")
-		}
-	}
 	if len(data) == 0 || reader.ref.Documents < 1 {
 		return nil, errors.New("zenbun: empty segment posting")
 	}
@@ -326,20 +284,16 @@ func (reader *segmentReader) decodePosting(ctx context.Context, data []byte) ([]
 	for len(data) > 0 {
 		delta, n := binary.Uvarint(data)
 		id += delta
-		if legacyKeys != nil {
-			keys = append(keys, legacyKeys[id-1])
-		} else {
-			blockNumber := int((id - 1) / documentBlockSize)
-			if blockNumber != previousBlock {
-				var err error
-				currentBlock, err = reader.documentBlock(ctx, blockNumber)
-				if err != nil {
-					return nil, err
-				}
-				previousBlock = blockNumber
+		blockNumber := int((id - 1) / documentBlockSize)
+		if blockNumber != previousBlock {
+			var err error
+			currentBlock, err = reader.documentBlock(ctx, blockNumber)
+			if err != nil {
+				return nil, err
 			}
-			keys = append(keys, currentBlock[(id-1)%documentBlockSize])
+			previousBlock = blockNumber
 		}
+		keys = append(keys, currentBlock[(id-1)%documentBlockSize])
 		data = data[n:]
 	}
 	return keys, nil
