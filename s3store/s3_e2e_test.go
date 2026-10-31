@@ -87,4 +87,27 @@ func TestS3EndToEnd(t *testing.T) {
 	if err != nil || len(keys) != 0 {
 		t.Fatalf("delete: %v %v", keys, err)
 	}
+
+	mirrorIndex, err := zenbun.Open(store, "mirror-index/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mirror, err := zenbun.NewMirror(mirrorIndex, store, "mirror-documents/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mirror.Apply(ctx, []zenbun.Change{{Key: "文書/1", Data: []byte("日本語の猫")}}); err != nil {
+		t.Fatal(err)
+	}
+	matches, err := mirror.Search(ctx, "日本語")
+	if err != nil || len(matches) != 1 || matches[0].Key != "文書/1" || string(matches[0].Data) != "日本語の猫" {
+		t.Fatalf("mirror search: %+v %v", matches, err)
+	}
+	if err := mirror.Apply(ctx, []zenbun.Change{{Key: "文書/1", Delete: true}}); err != nil {
+		t.Fatal(err)
+	}
+	matches, err = mirror.Search(ctx, "日本語")
+	if err != nil || len(matches) != 0 {
+		t.Fatalf("mirror delete: %+v %v", matches, err)
+	}
 }
