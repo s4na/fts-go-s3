@@ -187,6 +187,48 @@ func main() {
 
 必要な S3 権限、プレフィックスの指定、競合時の再試行については [S3 運用上の前提](docs/storage-operations.md) を参照してください。
 
+## 本文のコピーも管理する
+
+Firebase などが元データの場合、変更された文書の ID と UTF-8 本文をアプリから渡し、S3 互換ストレージへのコピーと索引の更新を `Mirror` にまとめられます。元データの取得や変更・削除の通知はアプリ側で行います。コピーを持ちたくない場合は、これまでどおり `Index.Apply` や `Index.Sync` を使えます。
+
+上の S3 の例で作った `index` と `store` を使う場合、次のように別のプレフィックスを指定します。
+
+```go
+mirror, err := zenbun.NewMirror(index, store, "copies/articles/")
+if err != nil {
+    log.Fatal(err)
+}
+
+// 元データの追加・更新を受け取ったら、その ID と本文を渡します。
+err = mirror.Apply(ctx, []zenbun.Change{
+    {Key: "article-1", Data: []byte("日本語の記事です")},
+})
+if err != nil {
+    log.Fatal(err) // 未処理として保持し、同じ変更を再試行します。
+}
+
+// 候補のコピーを読み、本文を確認した結果を返します。
+results, err := mirror.Search(ctx, "日本語")
+if err != nil {
+    log.Fatal(err)
+}
+for _, doc := range results {
+    fmt.Printf("%s: %s\n", doc.Key, doc.Data)
+}
+
+// 元データが削除された場合は Delete を指定します。
+err = mirror.Apply(ctx, []zenbun.Change{{Key: "article-1", Delete: true}})
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+文書 ID は `user/123` のように `/` を含められますが、空・`.`・`..` の要素は使用できません。コピーと索引のプレフィックスは互いに重ならないようにし、同じ索引に `Index.Apply` や `Index.Sync` を直接混ぜないでください。
+
+**コピーの更新と索引の公開は一つのトランザクションではありません。** エラーや中断時はコピーだけが更新済みの場合があります。変更通知を永続的に保持し、同じ Mirror への書き込みを全プロセスで直列化して、失敗したバッチを後続の変更より先に再試行してください。`Mirror` 自体は通知の保存・順序制御・自動再試行を行いません。更新中や再試行前は検索結果が古い、または一部が見つからない場合があります。
+
+`Mirror.Search` は索引の候補ごとにコピーされた本文を読み、NFKC 正規化と小文字化をしたうえで実際の部分一致を確認します。候補本文の読み取り量とリクエストは検索索引の読み取りとは別に発生します。コピーが見つからない場合などは空の結果にせずエラーを返します。
+
 ## 候補を本文で確認する
 
 `Search` はキーの一覧を返します。正確な結果が必要なら、各キーの元の本文を読み、**本文とクエリの両方**を同じ方法で正規化してから部分文字列を確認します。
