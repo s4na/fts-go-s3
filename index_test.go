@@ -868,3 +868,30 @@ func TestVersionTwoRejectsMissingDocumentBlocks(t *testing.T) {
 		t.Fatal("v2 segment without document blocks must be rejected")
 	}
 }
+
+func TestFrequentTermReadsDocumentBlocksInBatches(t *testing.T) {
+	const count = 10000
+	ctx := context.Background()
+	store := &documentBlockMeter{Store: &MemoryStore{}}
+	index, err := Open(store, "index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes := make([]Change, 0, count)
+	for n := 0; n < count; n++ {
+		changes = append(changes, Change{Key: fmt.Sprintf("docs/%08d", n), Data: []byte("日本語の猫")})
+	}
+	if err := index.Apply(ctx, changes); err != nil {
+		t.Fatal(err)
+	}
+	store.gets = 0
+	store.bytes = 0
+	keys, err := index.Search(ctx, "猫")
+	if err != nil || len(keys) != count {
+		t.Fatalf("frequent-term search: got %d keys, error %v", len(keys), err)
+	}
+	if store.gets > 16 {
+		t.Fatalf("document block reads were not batched: %d GETs", store.gets)
+	}
+	t.Logf("frequent-term search: documents=%d GETs=%d bytes=%d", count, store.gets, store.bytes)
+}

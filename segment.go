@@ -306,28 +306,37 @@ func (s *segmentReader) lookup(ctx context.Context, term string) ([]byte, bool, 
 	if index < 0 {
 		return nil, false, nil
 	}
-	block := s.blocks[index]
-	data, err := readRange(ctx, s.store, s.ref.Key, block.Offset, block.Length)
+	entries, err := s.readDictionary(ctx, index)
 	if err != nil {
 		return nil, false, err
-	}
-	var entries []dictionaryEntry
-	if err := json.Unmarshal(data, &entries); err != nil || len(entries) == 0 || entries[0].Term != block.First {
-		return nil, false, errors.New("zenbun: invalid dictionary")
-	}
-	for i, entry := range entries {
-		if !utf8.ValidString(entry.Term) || !validExtent(entry.Offset, entry.Length, s.indexOffset) || entry.Length > maxMetadataSize || i > 0 && entries[i-1].Term >= entry.Term {
-			return nil, false, errors.New("zenbun: invalid dictionary entry")
-		}
 	}
 	i := sort.Search(len(entries), func(i int) bool { return entries[i].Term >= term })
 	if i == len(entries) || entries[i].Term != term {
 		return nil, false, nil
 	}
 	entry := entries[i]
-	data, err = readRange(ctx, s.store, s.ref.Key, entry.Offset, entry.Length)
+	data, err := readRange(ctx, s.store, s.ref.Key, entry.Offset, entry.Length)
 	if err != nil {
 		return nil, false, fmt.Errorf("zenbun: read segment entry: %w", err)
 	}
 	return data, true, nil
+}
+
+// readDictionary validates a dictionary block before any entry is used.
+func (s *segmentReader) readDictionary(ctx context.Context, index int) ([]dictionaryEntry, error) {
+	block := s.blocks[index]
+	data, err := readRange(ctx, s.store, s.ref.Key, block.Offset, block.Length)
+	if err != nil {
+		return nil, err
+	}
+	var entries []dictionaryEntry
+	if err := json.Unmarshal(data, &entries); err != nil || len(entries) == 0 || entries[0].Term != block.First {
+		return nil, errors.New("zenbun: invalid dictionary")
+	}
+	for i, entry := range entries {
+		if !utf8.ValidString(entry.Term) || !validExtent(entry.Offset, entry.Length, s.indexOffset) || entry.Length > maxMetadataSize || i > 0 && entries[i-1].Term >= entry.Term {
+			return nil, errors.New("zenbun: invalid dictionary entry")
+		}
+	}
+	return entries, nil
 }
