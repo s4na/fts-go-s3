@@ -258,6 +258,95 @@ func (reader *segmentReader) documentBlock(ctx context.Context, block int) ([]st
 	return keys, nil
 }
 
+// documentBlockBatch coalesces adjacent document blocks while bounding each read.
+// A single block may exceed the batch target but remains limited by maxMetadataSize.
+func (reader *segmentReader) documentBlockBatch(ctx context.Context, first, last int) ([][]string, error) {
+	if first == last {
+		keys, err := reader.documentBlock(ctx, first)
+		return [][]string{keys}, err
+	}
+	blocks := make([][]string, last-first+1)
+	reader.docMu.Lock()
+	allCached := true
+	for n := first; n <= last; n++ {
+		blocks[n-first] = reader.docBlocks[n]
+		allCached = allCached && blocks[n-first] != nil
+	}
+	reader.docMu.Unlock()
+	if allCached {
+		return blocks, nil
+	}
+
+	entries := make([]dictionaryEntry, 0, last-first+1)
+	dictionaries := make(map[int][]dictionaryEntry)
+	for block := first; block <= last; block++ {
+		term := fmt.Sprintf("d%08x", block)
+		index := sort.Search(len(reader.blocks), func(i int) bool { return reader.blocks[i].First > term }) - 1
+		if index < 0 {
+			return nil, errors.New("zenbun: missing segment document block")
+		}
+		dictionary, ok := dictionaries[index]
+		if !ok {
+			var err error
+			dictionary, err = reader.readDictionary(ctx, index)
+			if err != nil {
+				return nil, err
+			}
+			dictionaries[index] = dictionary
+		}
+		i := sort.Search(len(dictionary), func(i int) bool { return dictionary[i].Term >= term })
+		if i == len(dictionary) || dictionary[i].Term != term {
+			return nil, errors.New("zenbun: missing segment document block")
+		}
+		entries = append(entries, dictionary[i])
+	}
+	for i := 1; i < len(entries); i++ {
+		if entries[i].Offset != entries[i-1].Offset+entries[i-1].Length {
+			return nil, errors.New("zenbun: noncontiguous segment document blocks")
+		}
+	}
+	start := entries[0].Offset
+	end := entries[len(entries)-1].Offset + entries[len(entries)-1].Length
+	const maxBatchBytes = 1 << 20
+	if end-start > maxBatchBytes {
+		mid := first + (last-first)/2
+		left, err := reader.documentBlockBatch(ctx, first, mid)
+		if err != nil {
+			return nil, err
+		}
+		right, err := reader.documentBlockBatch(ctx, mid+1, last)
+		if err != nil {
+			return nil, err
+		}
+		return append(left, right...), nil
+	}
+	data, err := readRange(ctx, reader.store, reader.ref.Key, start, end-start)
+	if err != nil {
+		return nil, err
+	}
+	for n, entry := range entries {
+		value := data[entry.Offset-start : entry.Offset-start+entry.Length]
+		keys, err := decodeList(value)
+		expected := min(documentBlockSize, reader.ref.Documents-(first+n)*documentBlockSize)
+		if err != nil || expected <= 0 || len(keys) != expected {
+			return nil, errors.New("zenbun: invalid segment document block")
+		}
+		reader.docMu.Lock()
+		if cached := reader.docBlocks[first+n]; cached != nil {
+			keys = cached
+		} else if len(value) <= maxDocumentCacheBytes-reader.docBytes {
+			if reader.docBlocks == nil {
+				reader.docBlocks = make(map[int][]string)
+			}
+			reader.docBlocks[first+n] = keys
+			reader.docBytes += len(value)
+		}
+		reader.docMu.Unlock()
+		blocks[n] = keys
+	}
+	return blocks, nil
+}
+
 // decodePosting resolves v2 document IDs without reading the complete key table.
 func (reader *segmentReader) decodePosting(ctx context.Context, data []byte) ([]string, error) {
 	if reader.version == legacySegmentVersion {
@@ -279,22 +368,37 @@ func (reader *segmentReader) decodePosting(ctx context.Context, data []byte) ([]
 	}
 	keys := make([]string, 0)
 	id = 0
-	previousBlock := -1
-	var currentBlock []string
 	for len(data) > 0 {
-		delta, n := binary.Uvarint(data)
-		id += delta
-		blockNumber := int((id - 1) / documentBlockSize)
-		if blockNumber != previousBlock {
-			var err error
-			currentBlock, err = reader.documentBlock(ctx, blockNumber)
-			if err != nil {
-				return nil, err
+		first := -1
+		last := -1
+		remaining := data
+		nextID := id
+		for len(remaining) > 0 {
+			delta, n := binary.Uvarint(remaining)
+			block := int((nextID + delta - 1) / documentBlockSize)
+			if first < 0 {
+				first = block
 			}
-			previousBlock = blockNumber
+			if last >= 0 && (block > last+1 || block-first >= 32) {
+				break
+			}
+			last = block
+			nextID += delta
+			remaining = remaining[n:]
 		}
-		keys = append(keys, currentBlock[(id-1)%documentBlockSize])
-		data = data[n:]
+		blocks, err := reader.documentBlockBatch(ctx, first, last)
+		if err != nil {
+			return nil, err
+		}
+		consumed := len(data) - len(remaining)
+		for processed := data[:consumed]; len(processed) > 0; {
+			delta, n := binary.Uvarint(processed)
+			id += delta
+			block := int((id - 1) / documentBlockSize)
+			keys = append(keys, blocks[block-first][(id-1)%documentBlockSize])
+			processed = processed[n:]
+		}
+		data = remaining
 	}
 	return keys, nil
 }
