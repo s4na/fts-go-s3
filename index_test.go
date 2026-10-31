@@ -1,6 +1,7 @@
 package zenbun
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -725,5 +726,43 @@ func TestSearchReadsOversizedBlockOnlyOnce(t *testing.T) {
 	}
 	if store.gets > 10 {
 		t.Fatalf("oversized block was reread: %d GETs", store.gets)
+	}
+}
+
+func TestUnblockedVersionTwoSegmentsRemainReadable(t *testing.T) {
+	ctx := context.Background()
+	data, err := encodeSegmentVersion(map[string]indexedDocument{"old": {Terms: terms("猫")}}, segmentVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offset, length, err := parseFooter(data[len(data)-footerSize:], int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := data[offset : offset+length]
+	old := []byte(`"doc_block_size":256`)
+	replacement := []byte(`"doc_block_size":  0`)
+	if !bytes.Contains(index, old) || len(old) != len(replacement) {
+		t.Fatal("unexpected index metadata")
+	}
+	copy(index, bytes.Replace(index, old, replacement, 1))
+	store := &MemoryStore{}
+	if _, err := store.Put(ctx, "index/segments/old", data, PutOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := json.Marshal(manifest{Version: manifestVersion, Generation: "test", Segments: []segmentRef{{Key: "index/segments/old", Size: int64(len(data)), Documents: 1}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Put(ctx, "index/manifest", m, PutOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := Open(store, "index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := reader.Search(ctx, "猫")
+	if err != nil || len(keys) != 1 || keys[0] != "old" {
+		t.Fatalf("legacy v2 search: %q, %v", keys, err)
 	}
 }
