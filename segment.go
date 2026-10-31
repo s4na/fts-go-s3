@@ -251,19 +251,18 @@ func readRange(ctx context.Context, store Store, key string, start, length int64
 }
 
 type segmentReader struct {
-	dictMu       sync.Mutex
-	dictCache    map[int][]dictionaryEntry
-	dictBytes    int
-	docMu        sync.Mutex
-	docBlocks    map[int][]string
-	docBytes     int
-	docBlockSize int
-	version      uint32
-	store        Store
-	ref          segmentRef
-	blocks       []blockIndex
-	bloom        []byte
-	indexOffset  int64
+	dictMu      sync.Mutex
+	dictCache   map[int][]dictionaryEntry
+	dictBytes   int
+	docMu       sync.Mutex
+	docBlocks   map[int][]string
+	docBytes    int
+	version     uint32
+	store       Store
+	ref         segmentRef
+	blocks      []blockIndex
+	bloom       []byte
+	indexOffset int64
 }
 
 func openSegment(ctx context.Context, store Store, ref segmentRef) (*segmentReader, error) {
@@ -290,7 +289,8 @@ func openSegment(ctx context.Context, store Store, ref segmentRef) (*segmentRead
 	if hex.EncodeToString(sum[:]) != index.BloomHash {
 		return nil, errors.New("zenbun: invalid segment bloom checksum")
 	}
-	if index.DocBlockSize != 0 && (binary.BigEndian.Uint32(footer[8:12]) != segmentVersion || index.DocBlockSize != documentBlockSize) {
+	version := binary.BigEndian.Uint32(footer[8:12])
+	if version == segmentVersion && index.DocBlockSize != documentBlockSize || version == legacySegmentVersion && index.DocBlockSize != 0 {
 		return nil, errors.New("zenbun: unsupported segment document block size")
 	}
 	blocks := index.Blocks
@@ -299,7 +299,7 @@ func openSegment(ctx context.Context, store Store, ref segmentRef) (*segmentRead
 			return nil, errors.New("zenbun: invalid dictionary block")
 		}
 	}
-	return &segmentReader{docBlockSize: index.DocBlockSize, version: binary.BigEndian.Uint32(footer[8:12]), store: store, ref: ref, blocks: blocks, bloom: index.Bloom, indexOffset: offset}, nil
+	return &segmentReader{version: version, store: store, ref: ref, blocks: blocks, bloom: index.Bloom, indexOffset: offset}, nil
 }
 
 func (s *segmentReader) lookup(ctx context.Context, term string) ([]byte, bool, error) {
