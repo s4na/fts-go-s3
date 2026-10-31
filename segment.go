@@ -305,11 +305,12 @@ func (s *segmentReader) lookup(ctx context.Context, term string) ([]byte, bool, 
 	return data, true, nil
 }
 
-// dictionary caches validated immutable blocks up to a bounded size per reader.
+// dictionary caches validated immutable blocks up to a bounded JSON byte size per reader.
 func (s *segmentReader) dictionary(ctx context.Context, index int) ([]dictionaryEntry, error) {
 	s.dictMu.Lock()
-	defer s.dictMu.Unlock()
-	if entries, found := s.dictCache[index]; found {
+	entries, found := s.dictCache[index]
+	s.dictMu.Unlock()
+	if found {
 		return entries, nil
 	}
 	block := s.blocks[index]
@@ -317,7 +318,7 @@ func (s *segmentReader) dictionary(ctx context.Context, index int) ([]dictionary
 	if err != nil {
 		return nil, err
 	}
-	var entries []dictionaryEntry
+	entries = nil
 	if err := json.Unmarshal(data, &entries); err != nil || len(entries) == 0 || entries[0].Term != block.First {
 		return nil, errors.New("zenbun: invalid dictionary")
 	}
@@ -325,6 +326,12 @@ func (s *segmentReader) dictionary(ctx context.Context, index int) ([]dictionary
 		if !utf8.ValidString(entry.Term) || !validExtent(entry.Offset, entry.Length, s.indexOffset) || entry.Length > maxMetadataSize || i > 0 && entries[i-1].Term >= entry.Term {
 			return nil, errors.New("zenbun: invalid dictionary entry")
 		}
+	}
+	s.dictMu.Lock()
+	defer s.dictMu.Unlock()
+	// Another caller may have fetched this block while the lock was released.
+	if cached, found := s.dictCache[index]; found {
+		return cached, nil
 	}
 	if len(data) <= maxCachedDictionaryBytes-s.dictBytes {
 		if s.dictCache == nil {
