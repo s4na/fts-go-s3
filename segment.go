@@ -22,8 +22,10 @@ const segmentVersion = 2
 const legacySegmentVersion = 1
 const footerSize = 32
 const dictionaryBlockSize = 64
-const maxMetadataSize = 64 << 20
 const maxCachedDictionaryBytes = 128 << 10
+const maxMetadataSize = 64 << 20
+const documentBlockSize = 256
+const maxDocumentCacheBytes = 64 << 10
 
 var segmentMagic = [8]byte{'Z', 'E', 'N', 'B', 'U', 'N', '0', '1'}
 
@@ -46,9 +48,10 @@ type blockIndex struct {
 }
 
 type segmentIndex struct {
-	Blocks    []blockIndex `json:"blocks"`
-	Bloom     []byte       `json:"bloom"`
-	BloomHash string       `json:"bloom_hash"`
+	DocBlockSize int          `json:"doc_block_size,omitempty"`
+	Blocks       []blockIndex `json:"blocks"`
+	Bloom        []byte       `json:"bloom"`
+	BloomHash    string       `json:"bloom_hash"`
 }
 
 func bloomPositions(key string, size int) [3]uint64 {
@@ -128,6 +131,15 @@ func encodeSegmentVersion(docs map[string]indexedDocument, version uint32) ([]by
 		return nil, err
 	}
 	entries["a"] = list
+	if version == segmentVersion {
+		for start := 0; start < len(keys); start += documentBlockSize {
+			block, err := json.Marshal(keys[start:min(start+documentBlockSize, len(keys))])
+			if err != nil {
+				return nil, err
+			}
+			entries[fmt.Sprintf("d%08x", start/documentBlockSize)] = block
+		}
+	}
 	for term, ids := range posting {
 		var data []byte
 		if version == legacySegmentVersion {
@@ -184,7 +196,11 @@ func encodeSegmentVersion(docs map[string]indexedDocument, version uint32) ([]by
 		bloomAdd(bloom, key)
 	}
 	sum := sha256.Sum256(bloom)
-	index, err := json.Marshal(segmentIndex{Blocks: blocks, Bloom: bloom, BloomHash: hex.EncodeToString(sum[:])})
+	indexData := segmentIndex{Blocks: blocks, Bloom: bloom, BloomHash: hex.EncodeToString(sum[:])}
+	if version == segmentVersion {
+		indexData.DocBlockSize = documentBlockSize
+	}
+	index, err := json.Marshal(indexData)
 	if err != nil {
 		return nil, err
 	}
@@ -235,17 +251,19 @@ func readRange(ctx context.Context, store Store, key string, start, length int64
 }
 
 type segmentReader struct {
-	dictMu      sync.Mutex
-	dictCache   map[int][]dictionaryEntry
-	dictBytes   int
-	docMu       sync.Mutex
-	docKeys     []string
-	version     uint32
-	store       Store
-	ref         segmentRef
-	blocks      []blockIndex
-	bloom       []byte
-	indexOffset int64
+	dictMu       sync.Mutex
+	dictCache    map[int][]dictionaryEntry
+	dictBytes    int
+	docMu        sync.Mutex
+	docBlocks    map[int][]string
+	docBytes     int
+	docBlockSize int
+	version      uint32
+	store        Store
+	ref          segmentRef
+	blocks       []blockIndex
+	bloom        []byte
+	indexOffset  int64
 }
 
 func openSegment(ctx context.Context, store Store, ref segmentRef) (*segmentReader, error) {
@@ -272,13 +290,16 @@ func openSegment(ctx context.Context, store Store, ref segmentRef) (*segmentRead
 	if hex.EncodeToString(sum[:]) != index.BloomHash {
 		return nil, errors.New("zenbun: invalid segment bloom checksum")
 	}
+	if index.DocBlockSize != 0 && (binary.BigEndian.Uint32(footer[8:12]) != segmentVersion || index.DocBlockSize != documentBlockSize) {
+		return nil, errors.New("zenbun: unsupported segment document block size")
+	}
 	blocks := index.Blocks
 	for i, block := range blocks {
 		if !utf8.ValidString(block.First) || !validExtent(block.Offset, block.Length, offset) || block.Length > maxMetadataSize || i > 0 && blocks[i-1].First >= block.First {
 			return nil, errors.New("zenbun: invalid dictionary block")
 		}
 	}
-	return &segmentReader{version: binary.BigEndian.Uint32(footer[8:12]), store: store, ref: ref, blocks: blocks, bloom: index.Bloom, indexOffset: offset}, nil
+	return &segmentReader{docBlockSize: index.DocBlockSize, version: binary.BigEndian.Uint32(footer[8:12]), store: store, ref: ref, blocks: blocks, bloom: index.Bloom, indexOffset: offset}, nil
 }
 
 func (s *segmentReader) lookup(ctx context.Context, term string) ([]byte, bool, error) {
@@ -305,11 +326,12 @@ func (s *segmentReader) lookup(ctx context.Context, term string) ([]byte, bool, 
 	return data, true, nil
 }
 
-// dictionary caches validated immutable blocks up to a bounded size per reader.
+// dictionary caches validated immutable blocks up to a bounded JSON byte size per reader.
 func (s *segmentReader) dictionary(ctx context.Context, index int) ([]dictionaryEntry, error) {
 	s.dictMu.Lock()
-	defer s.dictMu.Unlock()
-	if entries, found := s.dictCache[index]; found {
+	entries, found := s.dictCache[index]
+	s.dictMu.Unlock()
+	if found {
 		return entries, nil
 	}
 	block := s.blocks[index]
@@ -317,7 +339,7 @@ func (s *segmentReader) dictionary(ctx context.Context, index int) ([]dictionary
 	if err != nil {
 		return nil, err
 	}
-	var entries []dictionaryEntry
+	entries = nil
 	if err := json.Unmarshal(data, &entries); err != nil || len(entries) == 0 || entries[0].Term != block.First {
 		return nil, errors.New("zenbun: invalid dictionary")
 	}
@@ -325,6 +347,12 @@ func (s *segmentReader) dictionary(ctx context.Context, index int) ([]dictionary
 		if !utf8.ValidString(entry.Term) || !validExtent(entry.Offset, entry.Length, s.indexOffset) || entry.Length > maxMetadataSize || i > 0 && entries[i-1].Term >= entry.Term {
 			return nil, errors.New("zenbun: invalid dictionary entry")
 		}
+	}
+	s.dictMu.Lock()
+	defer s.dictMu.Unlock()
+	// Another caller may have fetched this block while the lock was released.
+	if cached, found := s.dictCache[index]; found {
+		return cached, nil
 	}
 	if len(data) <= maxCachedDictionaryBytes-s.dictBytes {
 		if s.dictCache == nil {
