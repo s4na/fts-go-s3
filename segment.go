@@ -22,6 +22,7 @@ const segmentVersion = 2
 const legacySegmentVersion = 1
 const footerSize = 32
 const dictionaryBlockSize = 64
+const maxCachedDictionaryBytes = 128 << 10
 const maxMetadataSize = 64 << 20
 const documentBlockSize = 256
 const maxDocumentCacheBytes = 64 << 10
@@ -250,6 +251,9 @@ func readRange(ctx context.Context, store Store, key string, start, length int64
 }
 
 type segmentReader struct {
+	dictMu      sync.Mutex
+	dictCache   map[int][]dictionaryEntry
+	dictBytes   int
 	docMu       sync.Mutex
 	docBlocks   map[int][]string
 	docBytes    int
@@ -306,7 +310,7 @@ func (s *segmentReader) lookup(ctx context.Context, term string) ([]byte, bool, 
 	if index < 0 {
 		return nil, false, nil
 	}
-	entries, err := s.readDictionary(ctx, index)
+	entries, err := s.dictionary(ctx, index)
 	if err != nil {
 		return nil, false, err
 	}
@@ -322,14 +326,20 @@ func (s *segmentReader) lookup(ctx context.Context, term string) ([]byte, bool, 
 	return data, true, nil
 }
 
-// readDictionary validates a dictionary block before any entry is used.
-func (s *segmentReader) readDictionary(ctx context.Context, index int) ([]dictionaryEntry, error) {
+// dictionary caches validated immutable blocks up to a bounded JSON byte size per reader.
+func (s *segmentReader) dictionary(ctx context.Context, index int) ([]dictionaryEntry, error) {
+	s.dictMu.Lock()
+	entries, found := s.dictCache[index]
+	s.dictMu.Unlock()
+	if found {
+		return entries, nil
+	}
 	block := s.blocks[index]
 	data, err := readRange(ctx, s.store, s.ref.Key, block.Offset, block.Length)
 	if err != nil {
 		return nil, err
 	}
-	var entries []dictionaryEntry
+	entries = nil
 	if err := json.Unmarshal(data, &entries); err != nil || len(entries) == 0 || entries[0].Term != block.First {
 		return nil, errors.New("zenbun: invalid dictionary")
 	}
@@ -337,6 +347,19 @@ func (s *segmentReader) readDictionary(ctx context.Context, index int) ([]dictio
 		if !utf8.ValidString(entry.Term) || !validExtent(entry.Offset, entry.Length, s.indexOffset) || entry.Length > maxMetadataSize || i > 0 && entries[i-1].Term >= entry.Term {
 			return nil, errors.New("zenbun: invalid dictionary entry")
 		}
+	}
+	s.dictMu.Lock()
+	defer s.dictMu.Unlock()
+	// Another caller may have fetched this block while the lock was released.
+	if cached, found := s.dictCache[index]; found {
+		return cached, nil
+	}
+	if len(data) <= maxCachedDictionaryBytes-s.dictBytes {
+		if s.dictCache == nil {
+			s.dictCache = make(map[int][]dictionaryEntry)
+		}
+		s.dictCache[index] = entries
+		s.dictBytes += len(data)
 	}
 	return entries, nil
 }

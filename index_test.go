@@ -925,3 +925,56 @@ func TestDocumentBlockBatchesRespectReadLimit(t *testing.T) {
 		t.Fatalf("document block range exceeds batch limit: %d bytes", store.maxRange)
 	}
 }
+
+type concurrentReadStore struct {
+	Store
+	mu       sync.Mutex
+	inFlight int
+	peak     int
+}
+
+func (s *concurrentReadStore) Get(ctx context.Context, key string, r *ByteRange) (Object, error) {
+	if !strings.Contains(key, "/segments/") {
+		return s.Store.Get(ctx, key, r)
+	}
+	s.mu.Lock()
+	s.inFlight++
+	if s.inFlight > s.peak {
+		s.peak = s.inFlight
+	}
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.inFlight--
+		s.mu.Unlock()
+	}()
+	timer := time.NewTimer(5 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return Object{}, ctx.Err()
+	case <-timer.C:
+	}
+	return s.Store.Get(ctx, key, r)
+}
+
+func TestSearchReadsSegmentsInParallel(t *testing.T) {
+	ctx := context.Background()
+	store := &concurrentReadStore{Store: &MemoryStore{}}
+	index, _ := Open(store, "index/")
+	for n := 0; n < 8; n++ {
+		if err := index.Apply(ctx, []Change{{Key: fmt.Sprintf("doc/%d", n), Data: []byte("猫")}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keys, err := index.Search(ctx, "猫")
+	if err != nil || len(keys) != 8 {
+		t.Fatalf("search: %q, %v", keys, err)
+	}
+	store.mu.Lock()
+	peak := store.peak
+	store.mu.Unlock()
+	if peak < 2 || peak > 8 {
+		t.Fatalf("expected bounded parallel segment reads, peak = %d", peak)
+	}
+}
