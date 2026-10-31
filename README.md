@@ -67,13 +67,7 @@ func main() {
 
 `articles/` 以下の文書を `indexes/articles/` の索引に同期して検索します。`Sync` は一覧の ETag を比べ、追加・更新・削除された文書だけを反映します。
 
-```sh
-export S3_ENDPOINT='https://s3.example.com'
-export S3_BUCKET='example-bucket'
-export AWS_REGION='us-east-1'
-export AWS_ACCESS_KEY_ID='...'
-export AWS_SECRET_ACCESS_KEY='...'
-```
+接続先と認証情報は `S3Config` で渡します。AWS 以外の S3 互換ストレージ（MinIO、Cloudflare R2、VersityGW、SeaweedFS など）でも同じです。
 
 ```go
 import (
@@ -82,9 +76,13 @@ import (
 )
 
 store, err := s3store.NewS3Store(s3store.S3Config{
-    Endpoint: os.Getenv("S3_ENDPOINT"),
-    Bucket:   os.Getenv("S3_BUCKET"),
-    Region:   os.Getenv("AWS_REGION"),
+    Endpoint:  "https://s3.example.com", // 必須。AWS 以外ならそのサービスの URL
+    Bucket:    "example-bucket",
+    Region:    "us-east-1", // 署名に使う。省略時は us-east-1
+    AccessKey: accessKey,   // シークレット管理などから読み込んだ値
+    SecretKey: secretKey,
+    // AccessKey と SecretKey を両方省略すると、
+    // 環境変数 AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN を読む。
 })
 if err != nil {
     log.Fatal(err)
@@ -106,9 +104,15 @@ if err != nil {
 keys, err := index.Search(ctx, "日本語")
 ```
 
-同じことを CLI でも行えます。
+同じことを CLI でも行えます。CLI は接続先と認証情報を環境変数から読みます。`AWS_` で始まる名前は、AWS 以外の S3 互換ストレージでも aws CLI などと共通の慣習的な名前です。
 
 ```sh
+export S3_ENDPOINT='https://s3.example.com'
+export S3_BUCKET='example-bucket'
+export AWS_REGION='us-east-1'           # 省略時は us-east-1
+export AWS_ACCESS_KEY_ID='...'
+export AWS_SECRET_ACCESS_KEY='...'
+
 go install github.com/s4na/fts-go-s3/cmd/zenbun@latest
 
 zenbun sync    -source articles/ -index indexes/articles/
@@ -373,7 +377,15 @@ func TestMyStore(t *testing.T) {
 
 ## S3 の設定
 
-- **認証**：`S3Config` の `AccessKey` / `SecretKey` / `SessionToken`、または環境変数 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` の静的認証情報を使います。IAM ロールや IMDS には対応していません。認証情報はリポジトリに書き込まないでください。
+- **認証**：静的なアクセスキーで署名（SigV4）します。匿名アクセス、IAM ロール、IMDS には対応していません。認証情報はリポジトリに書き込まないでください。認証情報は次の順で決まります。
+
+  | 優先 | 取得元 | 条件 |
+  |---|---|---|
+  | 1 | `S3Config` の `AccessKey` / `SecretKey` / `SessionToken` | `AccessKey` と `SecretKey` の少なくとも一方を指定した場合（このとき環境変数は読まない） |
+  | 2 | 環境変数 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` | `AccessKey` と `SecretKey` を両方省略した場合 |
+
+  最終的に `AccessKey` と `SecretKey` がそろわない場合、`NewS3Store` はエラーを返します。
+- **リージョン**：S3 互換ストレージでも署名の計算に使います。省略時は `us-east-1` です。多くの互換ストレージはこの値のまま動きます。動かない場合は、サービスの指定に合わせてください。
 - **アドレス形式**：標準ではパス形式を使います。`VirtualHost: true` でバーチャルホスト形式に切り替えられます。
 - **HTTP**：標準のタイムアウトは 30 秒です。`HTTPClient` を渡す場合は、タイムアウトを自分で設定してください。検索は最大 8 並列で GET するため、`http.Transport` の `MaxIdleConnsPerHost` を 8 以上にすると接続を再利用しやすくなります（同時接続数の上限ではありません）。
 - **必要な機能**：Range GET、一覧、削除、原子的な条件付き PUT、強い読み取り・一覧整合性が必要です。CI では VersityGW と SeaweedFS で検証しています。Amazon S3 自体はまだ検証していません。
@@ -419,7 +431,12 @@ go install github.com/s4na/fts-go-s3/cmd/zenbun@latest
 | `-region` | `AWS_REGION` | 指定するとエラー |
 | `-virtual-host` | パス形式 | 指定するとエラー |
 
-GCS の認証には、環境変数 `GOOGLE_OAUTH_ACCESS_TOKEN` のアクセストークンを使います（例：`export GOOGLE_OAUTH_ACCESS_TOKEN="$(gcloud auth print-access-token)"`）。トークンには有効期限（通常 1 時間）があります。`zenbun` が見つからない場合は、`$(go env GOPATH)/bin` が PATH に含まれているか確認してください。キーに改行を含む場合は、出力を区別しやすい Go API を使ってください。
+認証情報はオプションでは渡せません（プロセス一覧に秘密情報が見えないようにするため）。環境変数で渡してください。
+
+- **S3**：`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`（一時的な認証情報なら `AWS_SESSION_TOKEN` も）
+- **GCS**：`GOOGLE_OAUTH_ACCESS_TOKEN` のアクセストークン（例：`export GOOGLE_OAUTH_ACCESS_TOKEN="$(gcloud auth print-access-token)"`）。トークンには有効期限（通常 1 時間）があります。
+
+`zenbun` が見つからない場合は、`$(go env GOPATH)/bin` が PATH に含まれているか確認してください。キーに改行を含む場合は、出力を区別しやすい Go API を使ってください。
 
 ## 制限
 
