@@ -1,4 +1,5 @@
-package zenbun
+// Package s3store adapts an S3-compatible bucket to zenbun.Store.
+package s3store
 
 import (
 	"bytes"
@@ -16,6 +17,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	zenbun "github.com/s4na/fts-go-s3"
 )
 
 // S3Config configures an S3-compatible bucket. Credentials are static; when
@@ -28,13 +31,16 @@ type S3Config struct {
 	HTTPClient                         *http.Client
 }
 
-// S3Store implements Store using the S3 API and Signature Version 4.
+var _ zenbun.Store = (*S3Store)(nil)
+
+// S3Store implements zenbun.Store using the S3 API and Signature Version 4.
 type S3Store struct {
 	config   S3Config
 	endpoint *url.URL
 	client   *http.Client
 }
 
+// NewS3Store creates a store for an S3-compatible bucket.
 func NewS3Store(config S3Config) (*S3Store, error) {
 	endpoint, err := url.Parse(config.Endpoint)
 	if err != nil || endpoint == nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
@@ -200,38 +206,38 @@ func (e *S3Error) Error() string {
 func s3Error(operation string, status int) error {
 	switch status {
 	case http.StatusNotFound:
-		return fmt.Errorf("s3 %s: %w", operation, ErrNotFound)
+		return fmt.Errorf("s3 %s: %w", operation, zenbun.ErrNotFound)
 	case http.StatusPreconditionFailed, http.StatusConflict:
-		return fmt.Errorf("s3 %s: %w", operation, ErrConflict)
+		return fmt.Errorf("s3 %s: %w", operation, zenbun.ErrConflict)
 	case http.StatusRequestedRangeNotSatisfiable:
-		return fmt.Errorf("s3 %s: %w", operation, ErrInvalidRange)
+		return fmt.Errorf("s3 %s: %w", operation, zenbun.ErrInvalidRange)
 	default:
 		return &S3Error{Operation: operation, StatusCode: status}
 	}
 }
 
-func (s *S3Store) Get(ctx context.Context, key string, r *ByteRange) (Object, error) {
+func (s *S3Store) Get(ctx context.Context, key string, r *zenbun.ByteRange) (zenbun.Object, error) {
 	headers := make(http.Header)
 	if r != nil {
 		if r.Start < 0 || r.End <= r.Start {
-			return Object{}, ErrInvalidRange
+			return zenbun.Object{}, zenbun.ErrInvalidRange
 		}
 		headers.Set("Range", fmt.Sprintf("bytes=%d-%d", r.Start, r.End-1))
 	}
 	status, header, body, err := s.request(ctx, http.MethodGet, key, nil, headers, nil, true)
 	if err != nil {
-		return Object{}, err
+		return zenbun.Object{}, err
 	}
 	if r == nil && status != http.StatusOK || r != nil && status != http.StatusPartialContent {
-		return Object{}, s3Error("get", status)
+		return zenbun.Object{}, s3Error("get", status)
 	}
 	if r != nil && int64(len(body)) != r.End-r.Start {
-		return Object{}, ErrInvalidRange
+		return zenbun.Object{}, zenbun.ErrInvalidRange
 	}
-	return Object{Data: body, ETag: header.Get("ETag")}, nil
+	return zenbun.Object{Data: body, ETag: header.Get("ETag")}, nil
 }
 
-func (s *S3Store) Put(ctx context.Context, key string, data []byte, options PutOptions) (string, error) {
+func (s *S3Store) Put(ctx context.Context, key string, data []byte, options zenbun.PutOptions) (string, error) {
 	if options.IfNoneMatch && options.IfMatch != "" {
 		return "", errors.New("put: mutually exclusive conditions")
 	}
@@ -247,7 +253,7 @@ func (s *S3Store) Put(ctx context.Context, key string, data []byte, options PutO
 		return "", err
 	}
 	if status == http.StatusNotFound && options.IfMatch != "" {
-		return "", fmt.Errorf("s3 put: %w", ErrConflict)
+		return "", fmt.Errorf("s3 put: %w", zenbun.ErrConflict)
 	}
 	if status != http.StatusOK {
 		return "", s3Error("put", status)
@@ -270,8 +276,8 @@ func (s *S3Store) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
-func (s *S3Store) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
-	var result []ObjectInfo
+func (s *S3Store) List(ctx context.Context, prefix string) ([]zenbun.ObjectInfo, error) {
+	var result []zenbun.ObjectInfo
 	token := ""
 	for {
 		query := url.Values{"list-type": {"2"}, "prefix": {prefix}, "encoding-type": {"url"}}
@@ -305,7 +311,7 @@ func (s *S3Store) List(ctx context.Context, prefix string) ([]ObjectInfo, error)
 			if err != nil {
 				return nil, fmt.Errorf("s3 list timestamp: %w", err)
 			}
-			result = append(result, ObjectInfo{Key: key, ETag: item.ETag, Size: item.Size, LastModified: modified})
+			result = append(result, zenbun.ObjectInfo{Key: key, ETag: item.ETag, Size: item.Size, LastModified: modified})
 		}
 		if !page.Truncated {
 			break

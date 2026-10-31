@@ -8,6 +8,7 @@ import (
 	"time"
 
 	zenbun "github.com/s4na/fts-go-s3"
+	"github.com/s4na/fts-go-s3/s3store"
 )
 
 func run(args []string) error {
@@ -26,7 +27,7 @@ func run(args []string) error {
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
-	store, err := zenbun.NewS3Store(zenbun.S3Config{Endpoint: *endpoint, Bucket: *bucket, Region: *region, VirtualHost: *virtual})
+	store, err := s3store.NewS3Store(s3store.S3Config{Endpoint: *endpoint, Bucket: *bucket, Region: *region, VirtualHost: *virtual})
 	if err != nil {
 		return err
 	}
