@@ -321,17 +321,24 @@ func (reader *segmentReader) decodePosting(ctx context.Context, data []byte) ([]
 	}
 	keys := make([]string, 0)
 	id = 0
+	previousBlock := -1
+	var currentBlock []string
 	for len(data) > 0 {
 		delta, n := binary.Uvarint(data)
 		id += delta
 		if legacyKeys != nil {
 			keys = append(keys, legacyKeys[id-1])
 		} else {
-			block, err := reader.documentBlock(ctx, int((id-1)/documentBlockSize))
-			if err != nil {
-				return nil, err
+			blockNumber := int((id - 1) / documentBlockSize)
+			if blockNumber != previousBlock {
+				var err error
+				currentBlock, err = reader.documentBlock(ctx, blockNumber)
+				if err != nil {
+					return nil, err
+				}
+				previousBlock = blockNumber
 			}
-			keys = append(keys, block[(id-1)%documentBlockSize])
+			keys = append(keys, currentBlock[(id-1)%documentBlockSize])
 		}
 		data = data[n:]
 	}

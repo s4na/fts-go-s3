@@ -647,11 +647,13 @@ func TestWriteVersionRollout(t *testing.T) {
 type documentBlockMeter struct {
 	Store
 	bytes int64
+	gets  int
 }
 
 func (s *documentBlockMeter) Get(ctx context.Context, key string, r *ByteRange) (Object, error) {
 	obj, err := s.Store.Get(ctx, key, r)
 	s.bytes += int64(len(obj.Data))
+	s.gets++
 	return obj, err
 }
 
@@ -699,4 +701,29 @@ func TestSparseSearchOnLargeSegment(t *testing.T) {
 		t.Fatalf("sparse read too large: %d of %d bytes", store.bytes, m.Segments[0].Size)
 	}
 	t.Logf("docs=%d segment_bytes=%d first_query_bytes=%d cache_encoded_bytes=%d go_heap_before=%d go_heap_after=%d go_sys_after=%d", count, m.Segments[0].Size, store.bytes, r.docBytes, before.HeapAlloc, after.HeapAlloc, after.Sys)
+}
+
+func TestSearchReadsOversizedBlockOnlyOnce(t *testing.T) {
+	ctx := context.Background()
+	store := &documentBlockMeter{Store: &MemoryStore{}}
+	index, err := Open(store, "index", WithSegmentVersion(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes := make([]Change, 0, documentBlockSize)
+	prefix := strings.Repeat("x", 300)
+	for n := 0; n < documentBlockSize; n++ {
+		changes = append(changes, Change{Key: fmt.Sprintf("%s/%04d", prefix, n), Data: []byte("猫")})
+	}
+	if err := index.Apply(ctx, changes); err != nil {
+		t.Fatal(err)
+	}
+	store.gets = 0
+	keys, err := index.Search(ctx, "猫")
+	if err != nil || len(keys) != documentBlockSize {
+		t.Fatalf("search: %d, %v", len(keys), err)
+	}
+	if store.gets > 10 {
+		t.Fatalf("oversized block was reread: %d GETs", store.gets)
+	}
 }
