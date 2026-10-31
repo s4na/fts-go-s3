@@ -54,8 +54,8 @@ func validMirrorKey(key string) bool {
 	return true
 }
 
-// Apply saves or deletes document copies and publishes the corresponding index
-// changes. It returns an error if either stage fails. Changes may already be
+// Apply saves new document copies, publishes index changes, then deletes old
+// copies. It returns an error if any stage fails. Changes may already be
 // partially visible on error; retry the same batch before newer changes.
 // Change.ETag is ignored: the copy's ETag is recorded in the index instead.
 func (m *Mirror) Apply(ctx context.Context, changes []Change) error {
@@ -74,9 +74,6 @@ func (m *Mirror) Apply(ctx context.Context, changes []Change) error {
 	for _, change := range changes {
 		key := m.prefix + change.Key
 		if change.Delete {
-			if err := m.store.Delete(ctx, key); err != nil && !errors.Is(err, ErrNotFound) {
-				return fmt.Errorf("zenbun: delete document copy %q: %w", change.Key, err)
-			}
 			indexed = append(indexed, Change{Key: change.Key, Delete: true})
 			continue
 		}
@@ -89,6 +86,13 @@ func (m *Mirror) Apply(ctx context.Context, changes []Change) error {
 	if err := m.index.Apply(ctx, indexed); err != nil {
 		return fmt.Errorf("zenbun: update mirror index: %w", err)
 	}
+	for _, change := range changes {
+		if change.Delete {
+			if err := m.store.Delete(ctx, m.prefix+change.Key); err != nil && !errors.Is(err, ErrNotFound) {
+				return fmt.Errorf("zenbun: delete document copy %q: %w", change.Key, err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -98,10 +102,26 @@ type MirroredDocument struct {
 	Data []byte
 }
 
-// Search reads candidate copies and returns only documents containing query
+// Search reads all candidate copies and returns documents containing query
 // after NFKC normalization and lowercasing. A missing or unreadable copy is an
 // error, not an empty result. Ordering follows Index.Search's key ordering.
+// It makes one full-document GET per candidate; a common query may read every
+// document. Use SearchLimit to stop reading after a desired number of matches.
 func (m *Mirror) Search(ctx context.Context, query string) ([]MirroredDocument, error) {
+	return m.search(ctx, query, 0)
+}
+
+// SearchLimit returns at most limit matching copies in key order. limit must be
+// positive. It stops fetching bodies after enough matches, but Index.Search
+// still gathers all candidate IDs. Continuation or pagination is not provided.
+func (m *Mirror) SearchLimit(ctx context.Context, query string, limit int) ([]MirroredDocument, error) {
+	if limit <= 0 {
+		return nil, errors.New("zenbun: search limit must be positive")
+	}
+	return m.search(ctx, query, limit)
+}
+
+func (m *Mirror) search(ctx context.Context, query string, limit int) ([]MirroredDocument, error) {
 	keys, err := m.index.Search(ctx, query)
 	if err != nil {
 		return nil, err
@@ -118,6 +138,9 @@ func (m *Mirror) Search(ctx context.Context, query string) ([]MirroredDocument, 
 		}
 		if strings.Contains(strings.ToLower(norm.NFKC.String(string(obj.Data))), needle) {
 			result = append(result, MirroredDocument{Key: key, Data: obj.Data})
+			if limit > 0 && len(result) == limit {
+				break
+			}
 		}
 	}
 	return result, nil

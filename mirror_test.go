@@ -54,7 +54,8 @@ func TestMirrorApplyAndSearch(t *testing.T) {
 
 type mirrorFailStore struct {
 	Store
-	failKey string
+	failKey    string
+	failDelete string
 }
 
 func (s *mirrorFailStore) Put(ctx context.Context, key string, data []byte, options PutOptions) (string, error) {
@@ -62,6 +63,13 @@ func (s *mirrorFailStore) Put(ctx context.Context, key string, data []byte, opti
 		return "", errors.New("injected copy failure")
 	}
 	return s.Store.Put(ctx, key, data, options)
+}
+
+func (s *mirrorFailStore) Delete(ctx context.Context, key string) error {
+	if key == s.failDelete {
+		return errors.New("injected delete failure")
+	}
+	return s.Store.Delete(ctx, key)
 }
 
 func TestMirrorRetriesPartialWritesAndIndexFailure(t *testing.T) {
@@ -123,5 +131,87 @@ func TestMirrorRejectsInvalidBatchAndOverlappingPrefixes(t *testing.T) {
 	}
 	if _, err := store.Get(ctx, "documents/a", nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("invalid batch must not write copies: %v", err)
+	}
+}
+
+func TestMirrorDeletePublicationAndRetry(t *testing.T) {
+	ctx := context.Background()
+	memory := &MemoryStore{}
+	indexStore := &failStore{Store: memory}
+	index, _ := Open(indexStore, "index/")
+	docs := &mirrorFailStore{Store: memory}
+	mirror, _ := NewMirror(index, docs, "documents/")
+	if err := mirror.Apply(ctx, []Change{{Key: "a", Data: []byte("日本語の猫")}}); err != nil {
+		t.Fatal(err)
+	}
+	deletion := []Change{{Key: "a", Delete: true}}
+	indexStore.failManifest = true
+	if err := mirror.Apply(ctx, deletion); err == nil {
+		t.Fatal("expected index publication failure")
+	}
+	got, err := mirror.Search(ctx, "猫")
+	if err != nil || len(got) != 1 || got[0].Key != "a" {
+		t.Fatalf("failed index update must leave searchable copy: %+v, %v", got, err)
+	}
+	indexStore.failManifest = false
+	docs.failDelete = "documents/a"
+	if err := mirror.Apply(ctx, deletion); err == nil || !strings.Contains(err.Error(), "delete document copy") {
+		t.Fatalf("expected delete error: %v", err)
+	}
+	got, err = mirror.Search(ctx, "猫")
+	if err != nil || len(got) != 0 {
+		t.Fatalf("published deletion must not be searchable: %+v, %v", got, err)
+	}
+	if _, err := memory.Get(ctx, "documents/a", nil); err != nil {
+		t.Fatalf("failed deletion must leave copy for retry: %v", err)
+	}
+	docs.failDelete = ""
+	if err := mirror.Apply(ctx, deletion); err != nil {
+		t.Fatalf("retry deletion: %v", err)
+	}
+	if _, err := memory.Get(ctx, "documents/a", nil); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("copy after retry: %v", err)
+	}
+}
+
+type mirrorReadCounter struct {
+	Store
+	reads int
+}
+
+func (s *mirrorReadCounter) Get(ctx context.Context, key string, r *ByteRange) (Object, error) {
+	if strings.HasPrefix(key, "documents/") {
+		s.reads++
+	}
+	return s.Store.Get(ctx, key, r)
+}
+
+func TestMirrorSearchLimit(t *testing.T) {
+	ctx := context.Background()
+	store := &MemoryStore{}
+	index, _ := Open(store, "index/")
+	docs := &mirrorReadCounter{Store: store}
+	mirror, _ := NewMirror(index, docs, "documents/")
+	changes := []Change{
+		{Key: "a-false", Data: []byte("猫犬と犬猫")},
+		{Key: "b-match", Data: []byte("猫犬猫")},
+		{Key: "c-match", Data: []byte("猫犬猫")},
+		{Key: "d-match", Data: []byte("猫犬猫")},
+	}
+	if err := mirror.Apply(ctx, changes); err != nil {
+		t.Fatal(err)
+	}
+	got, err := mirror.SearchLimit(ctx, "猫犬猫", 2)
+	if err != nil || len(got) != 2 || got[0].Key != "b-match" || got[1].Key != "c-match" {
+		t.Fatalf("limited search: %+v, %v", got, err)
+	}
+	if docs.reads != 3 {
+		t.Fatalf("limit must stop after two true matches: read %d copies", docs.reads)
+	}
+	if _, err := mirror.SearchLimit(ctx, "猫", 0); err == nil {
+		t.Fatal("zero limit must be rejected")
+	}
+	if _, err := mirror.SearchLimit(ctx, "猫", -1); err == nil {
+		t.Fatal("negative limit must be rejected")
 	}
 }
