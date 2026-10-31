@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"sync"
@@ -106,22 +107,26 @@ func (i *Index) loadManifest(ctx context.Context) (manifest, string, error) {
 }
 
 func (i *Index) publish(ctx context.Context, m manifest, etag string) error {
+	_, err := i.publishWithETag(ctx, m, etag)
+	return err
+}
+
+func (i *Index) publishWithETag(ctx context.Context, m manifest, etag string) (string, error) {
 	id, err := randomID()
 	if err != nil {
-		return err
+		return "", err
 	}
 	m.Version = manifestVersion
 	m.Generation = id
 	data, err := json.Marshal(m)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if len(data) > maxMetadataSize {
-		return errors.New("zenbun: manifest exceeds size limit")
+		return "", errors.New("zenbun: manifest exceeds size limit")
 	}
 	options := PutOptions{IfNoneMatch: etag == "", IfMatch: etag}
-	_, err = i.store.Put(ctx, i.prefix+"manifest", data, options)
-	return err
+	return i.store.Put(ctx, i.prefix+"manifest", data, options)
 }
 
 func (i *Index) writeSegment(ctx context.Context, docs map[string]indexedDocument) (segmentRef, error) {
@@ -501,7 +506,69 @@ func (i *Index) Search(ctx context.Context, query string) ([]string, error) {
 	return keys, nil
 }
 
+// segmentSnapshot presents the document and metadata ranges without copying
+// them into a second in-memory store. The postings gap is deliberately absent.
+type segmentSnapshot struct {
+	Store
+	key              string
+	head, tail       []byte
+	tailOffset, size int64
+}
+
+func (s *segmentSnapshot) Get(ctx context.Context, key string, r *ByteRange) (Object, error) {
+	if err := ctx.Err(); err != nil {
+		return Object{}, err
+	}
+	if key != s.key || r == nil || r.Start < 0 || r.End <= r.Start || r.End > s.size {
+		return Object{}, ErrInvalidRange
+	}
+	if r.End <= int64(len(s.head)) {
+		return Object{Data: s.head[r.Start:r.End]}, nil
+	}
+	if r.Start >= s.tailOffset {
+		return Object{Data: s.tail[r.Start-s.tailOffset : r.End-s.tailOffset]}, nil
+	}
+	return Object{}, io.ErrUnexpectedEOF
+}
+
 func segmentDocuments(ctx context.Context, reader *segmentReader) (map[string]indexedDocument, error) {
+	// Dictionary blocks follow the data entries. Fetch them and the footer once,
+	// then read only the leading document entries, not the posting lists.
+	tailOffset := reader.blocks[0].Offset
+	for _, block := range reader.blocks {
+		if block.Offset < tailOffset {
+			tailOffset = block.Offset
+		}
+	}
+	tail, err := readRange(ctx, reader.store, reader.ref.Key, tailOffset, reader.ref.Size-tailOffset)
+	if err != nil {
+		return nil, err
+	}
+	headEnd := tailOffset
+	for _, block := range reader.blocks {
+		start := block.Offset - tailOffset
+		var entries []dictionaryEntry
+		if err := json.Unmarshal(tail[start:start+block.Length], &entries); err != nil || len(entries) == 0 || entries[0].Term != block.First {
+			return nil, errors.New("zenbun: invalid dictionary")
+		}
+		for n, entry := range entries {
+			if !utf8.ValidString(entry.Term) || !validExtent(entry.Offset, entry.Length, reader.indexOffset) || entry.Length > maxMetadataSize || n > 0 && entries[n-1].Term >= entry.Term {
+				return nil, errors.New("zenbun: invalid dictionary entry")
+			}
+			if strings.HasPrefix(entry.Term, "t") && entry.Offset < headEnd {
+				headEnd = entry.Offset
+			}
+		}
+	}
+	head, err := readRange(ctx, reader.store, reader.ref.Key, 0, headEnd)
+	if err != nil {
+		return nil, err
+	}
+	snapshot := &segmentSnapshot{Store: reader.store, key: reader.ref.Key, head: head, tail: tail, tailOffset: tailOffset, size: reader.ref.Size}
+	reader, err = openSegment(ctx, snapshot, reader.ref)
+	if err != nil {
+		return nil, err
+	}
 	data, found, err := reader.lookup(ctx, "a")
 	if err != nil {
 		return nil, err
