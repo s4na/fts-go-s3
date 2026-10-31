@@ -71,7 +71,7 @@ func run() error {
 	}
 	ctx := context.Background()
 	store := &meter{Store: backend}
-	index, err := zenbun.Open(store, "index/", zenbun.WithSegmentVersion(2))
+	index, err := zenbun.Open(store, "index/")
 	if err != nil {
 		return err
 	}
