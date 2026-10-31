@@ -19,6 +19,8 @@ jobs:
           cache: false
       - run: go vet ./...
       - run: go test -race ./...
+      - name: Measure sparse search in a 10,000-document segment
+        run: go test -v -run '^TestSparseSearchOnLargeSegment$' .
       - run: go test -run=^$ -fuzz=^FuzzSegmentFooter$ -fuzztime=5s -parallel=2 .
       - run: go test -run=^$ -fuzz=^FuzzSegment$ -fuzztime=5s -parallel=2 .
       - run: go test -run=^$ -fuzz=FuzzManifest -fuzztime=5s -parallel=2 .
