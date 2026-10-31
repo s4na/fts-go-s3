@@ -139,11 +139,12 @@ import (
     "os"
 
     zenbun "github.com/s4na/fts-go-s3"
+    "github.com/s4na/fts-go-s3/s3store"
 )
 
 func main() {
     ctx := context.Background()
-    store, err := zenbun.NewS3Store(zenbun.S3Config{
+    store, err := s3store.NewS3Store(s3store.S3Config{
         Endpoint: os.Getenv("S3_ENDPOINT"),
         Bucket:   os.Getenv("S3_BUCKET"),
         Region:   os.Getenv("AWS_REGION"),
@@ -181,7 +182,7 @@ func main() {
 
 `Sync` は文書の一覧と本文を別々に読みます。一覧の途中も含め、同期元の文書が同期中に変更されないよう、呼び出し側で調整してください。一覧と本文取得の間に ETag の変化を検出した場合は `ErrConflict` を返しますが、同期元全体を一瞬で撮影したような一覧は保証されません。
 
-`NewS3Store` は、上記の環境変数または `S3Config` で渡した静的認証情報を使います。IAM ロールや IMDS による認証情報の取得には対応していません。パス形式を標準で使い、`S3Config.VirtualHost` でバーチャルホスト形式に切り替えられます。標準の HTTP タイムアウトは 30 秒です。独自の HTTP クライアントを渡す場合は、そのクライアント側でタイムアウトを設定してください。
+`s3store.NewS3Store` は、上記の環境変数または `S3Config` で渡した静的認証情報を使います。IAM ロールや IMDS による認証情報の取得には対応していません。パス形式を標準で使い、`s3store.S3Config.VirtualHost` でバーチャルホスト形式に切り替えられます。標準の HTTP タイムアウトは 30 秒です。独自の HTTP クライアントを渡す場合は、そのクライアント側でタイムアウトを設定してください。
 
 ## 候補を本文で確認する
 

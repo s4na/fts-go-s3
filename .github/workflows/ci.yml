@@ -17,8 +17,17 @@ jobs:
         with:
           go-version: '1.27.3'
           cache: false
+      - name: Verify core package has no S3 client imports
+        run: |
+          imports=$(go list -f '{{join .Imports "\n"}}' .)
+          if printf '%s\n' "$imports" | grep -Ex 'net/http|encoding/xml'; then
+            echo "S3 client imports must remain in s3store" >&2
+            exit 1
+          fi
       - run: go vet ./...
       - run: go test -race ./...
+      - name: Measure sparse search in a 10,000-document segment
+        run: go test -v -run '^TestSparseSearchOnLargeSegment$' .
       - run: go test -run=^$ -fuzz=^FuzzSegmentFooter$ -fuzztime=5s -parallel=2 .
       - run: go test -run=^$ -fuzz=^FuzzSegment$ -fuzztime=5s -parallel=2 .
       - run: go test -run=^$ -fuzz=FuzzManifest -fuzztime=5s -parallel=2 .

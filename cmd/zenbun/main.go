@@ -8,6 +8,7 @@ import (
 	"time"
 
 	zenbun "github.com/s4na/fts-go-s3"
+	"github.com/s4na/fts-go-s3/s3store"
 )
 
 func run(args []string) error {
@@ -23,14 +24,18 @@ func run(args []string) error {
 	source := flags.String("source", "documents/", "source prefix for sync")
 	virtual := flags.Bool("virtual-host", false, "use virtual-host addressing")
 	grace := flags.Duration("grace", 24*time.Hour, "reclaim grace period")
+	segmentVersion := flags.Uint("segment-version", 1, "new segment version (1 or 2)")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
-	store, err := zenbun.NewS3Store(zenbun.S3Config{Endpoint: *endpoint, Bucket: *bucket, Region: *region, VirtualHost: *virtual})
+	if *segmentVersion != 1 && *segmentVersion != 2 {
+		return fmt.Errorf("segment-version must be 1 or 2")
+	}
+	store, err := s3store.NewS3Store(s3store.S3Config{Endpoint: *endpoint, Bucket: *bucket, Region: *region, VirtualHost: *virtual})
 	if err != nil {
 		return err
 	}
-	index, err := zenbun.Open(store, *prefix)
+	index, err := zenbun.Open(store, *prefix, zenbun.WithSegmentVersion(uint32(*segmentVersion)))
 	if err != nil {
 		return err
 	}
