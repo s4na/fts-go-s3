@@ -627,14 +627,18 @@ func TestDefaultWriterUsesVersionTwo(t *testing.T) {
 
 type documentBlockMeter struct {
 	Store
-	bytes int64
-	gets  int
+	bytes    int64
+	gets     int
+	maxRange int64
 }
 
 func (s *documentBlockMeter) Get(ctx context.Context, key string, r *ByteRange) (Object, error) {
 	obj, err := s.Store.Get(ctx, key, r)
 	s.bytes += int64(len(obj.Data))
 	s.gets++
+	if r != nil && r.End-r.Start > s.maxRange {
+		s.maxRange = r.End - r.Start
+	}
 	return obj, err
 }
 
@@ -761,4 +765,30 @@ func TestFrequentTermReadsDocumentBlocksInBatches(t *testing.T) {
 		t.Fatalf("document block reads were not batched: %d GETs", store.gets)
 	}
 	t.Logf("frequent-term search: documents=%d GETs=%d bytes=%d", count, store.gets, store.bytes)
+}
+
+func TestDocumentBlockBatchesRespectReadLimit(t *testing.T) {
+	const count = 3 * documentBlockSize
+	ctx := context.Background()
+	store := &documentBlockMeter{Store: &MemoryStore{}}
+	index, err := Open(store, "index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes := make([]Change, 0, count)
+	prefix := strings.Repeat("長", 500)
+	for n := 0; n < count; n++ {
+		changes = append(changes, Change{Key: fmt.Sprintf("%s/%04d", prefix, n), Data: []byte("猫")})
+	}
+	if err := index.Apply(ctx, changes); err != nil {
+		t.Fatal(err)
+	}
+	store.maxRange = 0
+	keys, err := index.Search(ctx, "猫")
+	if err != nil || len(keys) != count {
+		t.Fatalf("large document-block search: got %d keys, error %v", len(keys), err)
+	}
+	if store.maxRange > 1<<20 {
+		t.Fatalf("document block range exceeds batch limit: %d bytes", store.maxRange)
+	}
 }
