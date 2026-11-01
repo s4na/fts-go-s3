@@ -78,6 +78,7 @@ func run(args []string) error {
 	flags.IntVar(&findOptions.MaxSnippetsPerDoc, "max-snippets", 0, "find: snippets per document (default 3)")
 	flags.IntVar(&findOptions.MaxBytes, "max-bytes", 0, "find: total snippet bytes (default 16384)")
 	flags.StringVar(&findOptions.After, "after", "", "find: continue after this key (a previous result's next)")
+	flags.BoolVar(&findOptions.Matches, "matches", false, "find: include matching byte ranges in each snippet")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}

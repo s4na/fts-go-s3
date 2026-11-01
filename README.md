@@ -332,6 +332,7 @@ if result.Truncated {
 | `MaxSnippetsPerDoc` | 1 文書あたりの抜粋の数 | 3 |
 | `MaxBytes` | 抜粋の合計バイト数。超えた分は文字の途中で切らずに打ち切る | 16 KiB |
 | `After` | このキーより後から検索する。前回の結果の `Next` を渡す | なし |
+| `Matches` | 抜粋の中で語に一致した範囲（`Snippet.Matches`）も返す | `false` |
 
 - 結果は**キー順**で、関連度による順位はありません。
 - `Candidates` は、索引で絞った候補の数です。本文で確認する前の上限の目安になります。
@@ -341,6 +342,7 @@ if result.Truncated {
 - 候補 1 件ごとに本文を 1 回 GET します。`Limit` 件の一致が見つかった時点で読むのを止めますが、`None` で多くの候補が外れる検索では、多くの本文を読むことがあります。
 - 1 回の検索で使える語は合計 64 個まで、概念は 16 個までです。語の長さは 256 バイトまでです。抜粋は行単位なので、`All` の語には改行を含められません。
 - 索引だけで候補キーが欲しい場合は `Index.SearchQuery` を使います（`None` は適用されません）。
+- **`Matches`**：画面でハイライトする場合に使います。`Snippet.Matches` の `Start`・`End` は、正規化する前の `Text` 上のバイト位置です（`Text[Start:End]`）。全角の「ＡＢＣ」や半角の「ｶﾞｲﾄﾞ」に一致した場合も、元の文字の範囲を指します。正規化で長さが変わる文字（「㍿」→「株式会社」など）は、語が一部に一致した場合も、文字全体を範囲にします。範囲は先頭から順に並び、重なったり接したりする範囲は 1 つにまとめます。`MaxBytes` で切った抜粋では、切った後の `Text` に収まる範囲だけを返します。JavaScript で使う場合は、UTF-16 の位置に変換してください。
 
 コマンドラインでは、クエリを JSON で渡し、結果を JSON で受け取ります。LLM のツールとして呼ぶ場合に便利です。未知のフィールドはエラーにします。
 
@@ -479,7 +481,7 @@ go install github.com/s4na/fts-go-s3/cmd/zenbun@latest
 |---|---|
 | `zenbun sync -source <prefix> -index <prefix>` | 同期元を索引に反映（競合時は最大 3 回再試行） |
 | `zenbun search -index <prefix> <query>` | 候補キーを 1 行に 1 つ表示 |
-| `zenbun find -index <prefix> [-mode -limit -context -max-snippets -max-bytes -after] '<JSON>'` | 条件を組み合わせて検索し、本文で確認した結果を JSON で表示（[Find](#条件を組み合わせて検索する-find)） |
+| `zenbun find -index <prefix> [-mode -limit -context -max-snippets -max-bytes -after -matches] '<JSON>'` | 条件を組み合わせて検索し、本文で確認した結果を JSON で表示（[Find](#条件を組み合わせて検索する-find)） |
 | `zenbun compact -index <prefix>` | まとめられるセグメントがなくなるまでコンパクション |
 | `zenbun reclaim -index <prefix> -grace <期間>` | 不要なセグメントを回収（`-grace` は `24h` や `90m` の形式、既定値 `24h`） |
 
