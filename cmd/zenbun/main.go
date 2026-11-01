@@ -78,6 +78,7 @@ func run(args []string) error {
 	flags.IntVar(&findOptions.MaxSnippetsPerDoc, "max-snippets", 0, "find: snippets per document (default 3)")
 	flags.IntVar(&findOptions.MaxBytes, "max-bytes", 0, "find, read: total text bytes (default 16384)")
 	flags.StringVar(&findOptions.After, "after", "", "find: continue after this key (a previous result's next)")
+	flags.BoolVar(&findOptions.Matches, "matches", false, "find: include matching byte ranges in each snippet")
 	var readOptions zenbun.ReadOptions
 	flags.IntVar(&readOptions.Start, "start", 1, "read: first line, from 1")
 	flags.IntVar(&readOptions.End, "end", 0, "read: last line (default the end of the document)")
