@@ -62,6 +62,7 @@ func TestQueryValidation(t *testing.T) {
 		{All: [][]string{{""}}},
 		{All: [][]string{{"猫"}}, None: []string{""}},
 		{All: [][]string{{strings.Repeat("猫", 100)}}},
+		{All: [][]string{{"猫\nネコ"}}},
 		{All: make([][]string, maxQueryGroups+1)},
 	}
 	for _, q := range invalid {

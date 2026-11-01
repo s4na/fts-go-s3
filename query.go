@@ -64,6 +64,10 @@ func (q Query) validate() error {
 			if err := check(word); err != nil {
 				return err
 			}
+			// Snippets are lines, so a word in All must fit within one line.
+			if strings.ContainsAny(word, "\r\n") {
+				return errors.New("zenbun: words in All must not contain line breaks")
+			}
 		}
 	}
 	for _, word := range q.None {
