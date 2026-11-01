@@ -135,7 +135,8 @@ type Snippet struct {
 }
 
 // FoundDocument is a verified match. Lines counts lines containing a word from
-// All; Snippets covers at most MaxSnippetsPerDoc of them.
+// All; Snippets covers at most MaxSnippetsPerDoc of them. Omitting lines here
+// does not set Truncated, since the search itself continues.
 type FoundDocument struct {
 	Key      string    `json:"key"`
 	Lines    int       `json:"lines,omitempty"`
