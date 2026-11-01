@@ -3,9 +3,12 @@ package zenbun
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func newQueryIndex(t *testing.T, docs map[string]string) (*Index, *MemoryStore) {
@@ -164,6 +167,91 @@ func TestFindPagesWithLimitAndCursor(t *testing.T) {
 	result, err := index.Find(ctx, store, q, FindOptions{Mode: FindCount, Limit: 2})
 	if err != nil || result.Count != 2 || result.Candidates != 5 || !result.Truncated || result.Next != "docs/2" {
 		t.Fatalf("count limit: %+v %v", result, err)
+	}
+}
+
+// slowReadStore delays full-document reads and records how many overlap.
+type slowReadStore struct {
+	Store
+	fail     string
+	mu       sync.Mutex
+	inFlight int
+	maxIn    int
+	reads    int
+}
+
+func (s *slowReadStore) Get(ctx context.Context, key string, r *ByteRange) (Object, error) {
+	if r != nil {
+		return s.Store.Get(ctx, key, r)
+	}
+	s.mu.Lock()
+	s.reads++
+	s.inFlight++
+	s.maxIn = max(s.maxIn, s.inFlight)
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.inFlight--
+		s.mu.Unlock()
+	}()
+	select {
+	case <-time.After(20 * time.Millisecond):
+	case <-ctx.Done():
+		return Object{}, ctx.Err()
+	}
+	if key == s.fail {
+		return Object{}, errors.New("injected read failure")
+	}
+	return s.Store.Get(ctx, key, r)
+}
+
+func TestFindReadsBodiesConcurrentlyInKeyOrder(t *testing.T) {
+	ctx := context.Background()
+	docs := map[string]string{}
+	for n := range 10 {
+		body := "猫犬猫"
+		if n%3 == 0 {
+			body = "猫犬と犬猫" // an index candidate that fails the body check
+		}
+		docs[fmt.Sprintf("docs/%02d", n)] = body
+	}
+	index, store := newQueryIndex(t, docs)
+	q := Query{All: [][]string{{"猫犬猫"}}}
+	serial, err := index.Find(ctx, store, q, FindOptions{Concurrency: 1, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slow := &slowReadStore{Store: store}
+	parallel, err := index.Find(ctx, slow, q, FindOptions{Concurrency: 3, Limit: 100})
+	if err != nil || !reflect.DeepEqual(parallel, serial) {
+		t.Fatalf("parallel result differs:\n got %+v %v\nwant %+v", parallel, err, serial)
+	}
+	if slow.maxIn < 2 || slow.maxIn > 3 {
+		t.Fatalf("overlapping reads: %d, want 2 to 3", slow.maxIn)
+	}
+
+	// Find stops at docs/02 after reading 3 bodies; reads ahead of it are
+	// canceled, so at most Concurrency-1 extra reads start.
+	slow = &slowReadStore{Store: store}
+	limited, err := index.Find(ctx, slow, q, FindOptions{Mode: FindKeys, Concurrency: 3, Limit: 2})
+	if err != nil || limited.Count != 2 || !limited.Truncated {
+		t.Fatalf("limited: %+v %v", limited, err)
+	}
+	if slow.reads > 3+2 {
+		t.Fatalf("read %d bodies to check 3 candidates with concurrency 3", slow.reads)
+	}
+	if slow.inFlight != 0 {
+		t.Fatalf("reads still running after Find returned: %d", slow.inFlight)
+	}
+
+	slow = &slowReadStore{Store: store, fail: "docs/04"}
+	if _, err := index.Find(ctx, slow, q, FindOptions{Concurrency: 3, Limit: 100}); err == nil || !strings.Contains(err.Error(), "injected") {
+		t.Fatalf("read failure: %v", err)
+	}
+	for _, c := range []int{-1, maxFindReads + 1} {
+		if _, err := index.Find(ctx, store, q, FindOptions{Concurrency: c}); err == nil {
+			t.Fatalf("accepted concurrency %d", c)
+		}
 	}
 }
 
