@@ -120,7 +120,7 @@ zenbun search  -index indexes/articles/ '日本語'
 zenbun compact -index indexes/articles/
 ```
 
-本番で使う前に、少なくとも[はじめに守ること](#はじめに守ること)と[索引の手入れ](#索引の手入れ)を読んでください。
+本番で使う前に、少なくとも[はじめに守ること](#はじめに守ること)と[索引の手入れ](#索引の手入れ)を読んでください。wiki などの既存のアプリに組み込む場合は、[アプリに組み込む](docs/integration.md)も参照してください。
 
 ## 目次
 
@@ -131,6 +131,7 @@ zenbun compact -index indexes/articles/
 - [本文のコピーも管理する Mirror](#本文のコピーも管理する-mirror)
 - [候補を本文で確認する](#候補を本文で確認する)
 - [条件を組み合わせて検索する Find](#条件を組み合わせて検索する-find)
+- [行範囲を指定して読む Read](#行範囲を指定して読む-read)
 - [同時更新と競合](#同時更新と競合)
 - [索引の手入れ](#索引の手入れ)
 - [ストレージアダプター](#ストレージアダプター)
@@ -332,6 +333,7 @@ if result.Truncated {
 | `MaxSnippetsPerDoc` | 1 文書あたりの抜粋の数 | 3 |
 | `MaxBytes` | 抜粋の合計バイト数。超えた分は文字の途中で切らずに打ち切る | 16 KiB |
 | `After` | このキーより後から検索する。前回の結果の `Next` を渡す | なし |
+| `Concurrency` | 本文を同時に読む数（最大 64）。JSON では指定できない | 4 |
 | `Matches` | 抜粋の中で語に一致した範囲（`Snippet.Matches`）も返す | `false` |
 
 - 結果は**キー順**で、関連度による順位はありません。
@@ -340,6 +342,7 @@ if result.Truncated {
 - `Lines` は、その文書の中で語を含む行の数です。`MaxSnippetsPerDoc` で抜粋を省いても検索は止まらないので、`Truncated` は変わりません。`Lines` と抜粋の数を比べると、省いた行があるか分かります。
 - `Index.Find` は、`Sync` で同期した同期元の本文を読みます。同期後に削除された文書は結果から外し、エラーにはしません。`Mirror.Find` は、コピーが見つからない場合にエラーを返します。
 - 候補 1 件ごとに本文を 1 回 GET します。`Limit` 件の一致が見つかった時点で読むのを止めますが、`None` で多くの候補が外れる検索では、多くの本文を読むことがあります。
+- 本文は `Concurrency` 件まで同時に読みます。結果はキー順のままです。止まった時点で先読み中の読み取りは取り消すので、余分な GET は最大 `Concurrency - 1` 回です。ストレージへの負荷を抑えたい場合は小さく、遅延が大きいストレージでは大きくしてください。
 - 1 回の検索で使える語は合計 64 個まで、概念は 16 個までです。語の長さは 256 バイトまでです。抜粋は行単位なので、`All` の語には改行を含められません。
 - 索引だけで候補キーが欲しい場合は `Index.SearchQuery` を使います（`None` は適用されません）。
 - **`Matches`**：画面でハイライトする場合に使います。`Snippet.Matches` の `Start`・`End` は、正規化する前の `Text` 上のバイト位置です（`Text[Start:End]`）。全角の「ＡＢＣ」や半角の「ｶﾞｲﾄﾞ」に一致した場合も、元の文字の範囲を指します。正規化で長さが変わる文字（「㍿」→「株式会社」など）は、語が一部に一致した場合も、文字全体を範囲にします。範囲は先頭から順に並び、重なったり接したりする範囲は 1 つにまとめます。`MaxBytes` で切った抜粋では、切った後の `Text` に収まる範囲だけを返します。JavaScript で使う場合は、UTF-16 の位置に変換してください。
@@ -353,6 +356,44 @@ zenbun find -index indexes/articles/ -context 1 -limit 10 \
 
 ```json
 {"count":1,"candidates":2,"documents":[{"key":"articles/a.txt","lines":1,"snippets":[{"line":2,"text":"前の行\n猫の請求書です\n次の行"}]}]}
+```
+
+## 行範囲を指定して読む Read
+
+`Read` は、1 つの文書から行範囲を指定して読みます。`Find` の抜粋の前後をもう少し読みたいときや、`MaxSnippetsPerDoc` で省かれた行を読みたいときに、本文全体を取得せずに済みます。
+
+```go
+doc := result.Documents[0]
+line := doc.Snippets[0].Line
+r, err := index.Read(ctx, store, doc.Key, zenbun.ReadOptions{Start: line - 5, End: line + 20})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(r.Text)
+if r.Next != 0 {
+    // 続きは ReadOptions{Start: r.Next, End: ...} で読む。
+}
+```
+
+| `ReadOptions` | 内容 | 既定値 |
+|---|---|---|
+| `Start` | 最初の行（1 始まり）。`Snippet.Line` と同じ番号 | 必須 |
+| `End` | 最後の行。文書の行数を超えた分は無視する | 文書の最後 |
+| `MaxBytes` | `Text` の最大バイト数。収まらない行から先は返さない | 16 KiB |
+
+- 行の区切り方は `Find` の抜粋と同じです。`\n` で区切り、`\r` は除きます。`Lines` は文書全体の行数です。
+- `MaxBytes` で切った場合は `Truncated` が `true` になり、`Next` に続きの開始行が入ります。最初の 1 行だけで `MaxBytes` を超える場合は、その行を文字の途中で切らない位置で打ち切り、`Next` は次の行になります（残りは読めません）。
+- `Start` が 1 未満か文書の行数を超える場合、`End` が `Start` より前の場合はエラーです。文書がない場合は `ErrNotFound` を包んだエラーを返します。
+- `Index.Read` は索引を確認せず、`source` の任意のキーを読みます。LLM などから受け取ったキーを渡す場合は、呼び出す前に閲覧権限を確認してください。`Mirror.Read` は文書 ID の形式（空・`.`・`..` の要素を含まない）を確認します。
+
+コマンドラインでは、結果を JSON で表示します。
+
+```sh
+zenbun read -index indexes/articles/ -start 10 -end 30 articles/a.txt
+```
+
+```json
+{"key":"articles/a.txt","start":10,"text":"…","lines":120}
 ```
 
 ## 同時更新と競合
@@ -482,6 +523,7 @@ go install github.com/s4na/fts-go-s3/cmd/zenbun@latest
 | `zenbun sync -source <prefix> -index <prefix>` | 同期元を索引に反映（競合時は最大 3 回再試行） |
 | `zenbun search -index <prefix> <query>` | 候補キーを 1 行に 1 つ表示 |
 | `zenbun find -index <prefix> [-mode -limit -context -max-snippets -max-bytes -after -matches] '<JSON>'` | 条件を組み合わせて検索し、本文で確認した結果を JSON で表示（[Find](#条件を組み合わせて検索する-find)） |
+| `zenbun read -index <prefix> [-start -end -max-bytes] <key>` | 文書の行範囲を JSON で表示（[Read](#行範囲を指定して読む-read)） |
 | `zenbun compact -index <prefix>` | まとめられるセグメントがなくなるまでコンパクション |
 | `zenbun reclaim -index <prefix> -grace <期間>` | 不要なセグメントを回収（`-grace` は `24h` や `90m` の形式、既定値 `24h`） |
 
