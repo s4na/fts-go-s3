@@ -332,8 +332,16 @@ if result.Truncated {
 | `MaxSnippetsPerDoc` | 1 文書あたりの抜粋の数 | 3 |
 | `MaxBytes` | 抜粋の合計バイト数。超えた分は文字の途中で切らずに打ち切る | 16 KiB |
 | `After` | このキーより後から検索する。前回の結果の `Next` を渡す | なし |
+| `Filter` | `false` を返したキーを、本文を読む前に除く。JSON では指定できない | なし |
 
 - 結果は**キー順**で、関連度による順位はありません。
+- **`Filter`**：閲覧権限など、利用者ごとに見せてよい文書を絞るために、アプリ側で設定します。除いたキーの本文は読みません。`Count`・`Candidates`・`Limit` にも数えず、`Next` にもならないので、結果から除いた文書の存在は分かりません。LLM から受け取った JSON では設定できません。
+
+  ```go
+  result, err := index.Find(ctx, store, query, zenbun.FindOptions{
+      Filter: func(key string) bool { return user.CanRead(key) },
+  })
+  ```
 - `Candidates` は、索引で絞った候補の数です。本文で確認する前の上限の目安になります。
 - `Limit` か `MaxBytes` の上限で止まった場合、`Truncated` が `true` になり、`Next` に続きの開始位置が入ります。
 - `Lines` は、その文書の中で語を含む行の数です。`MaxSnippetsPerDoc` で抜粋を省いても検索は止まらないので、`Truncated` は変わりません。`Lines` と抜粋の数を比べると、省いた行があるか分かります。

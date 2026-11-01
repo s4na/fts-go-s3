@@ -119,13 +119,19 @@ const (
 // defaults: snippets, 20 documents, 3 snippets per document and 16 KiB of
 // snippet text. Context is the number of lines around each matching line.
 // After continues from a previous result's Next.
+//
+// Filter, when set, excludes keys before their bodies are read. Excluded keys
+// count toward neither Count, Candidates nor Limit, and never become Next, so
+// a result reveals nothing about them. It is for the application to set, such
+// as from access rights, and is never decoded from JSON.
 type FindOptions struct {
-	Mode              FindMode `json:"mode,omitempty"`
-	Limit             int      `json:"limit,omitempty"`
-	Context           int      `json:"context,omitempty"`
-	MaxSnippetsPerDoc int      `json:"max_snippets_per_doc,omitempty"`
-	MaxBytes          int      `json:"max_bytes,omitempty"`
-	After             string   `json:"after,omitempty"`
+	Mode              FindMode          `json:"mode,omitempty"`
+	Limit             int               `json:"limit,omitempty"`
+	Context           int               `json:"context,omitempty"`
+	MaxSnippetsPerDoc int               `json:"max_snippets_per_doc,omitempty"`
+	MaxBytes          int               `json:"max_bytes,omitempty"`
+	After             string            `json:"after,omitempty"`
+	Filter            func(string) bool `json:"-"`
 }
 
 // Snippet is consecutive lines of a document starting at the 1-based Line.
@@ -223,6 +229,15 @@ func find(ctx context.Context, index *Index, q Query, options FindOptions, read 
 	keys = keys[sort.SearchStrings(keys, options.After):]
 	if len(keys) > 0 && keys[0] == options.After {
 		keys = keys[1:]
+	}
+	if options.Filter != nil {
+		allowed := keys[:0]
+		for _, key := range keys {
+			if options.Filter(key) {
+				allowed = append(allowed, key)
+			}
+		}
+		keys = allowed
 	}
 	result := FindResult{Candidates: len(keys)}
 	budget := options.MaxBytes

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -164,6 +165,72 @@ func TestFindPagesWithLimitAndCursor(t *testing.T) {
 	result, err := index.Find(ctx, store, q, FindOptions{Mode: FindCount, Limit: 2})
 	if err != nil || result.Count != 2 || result.Candidates != 5 || !result.Truncated || result.Next != "docs/2" {
 		t.Fatalf("count limit: %+v %v", result, err)
+	}
+}
+
+// readLogStore records the keys of full-document reads.
+type readLogStore struct {
+	Store
+	mu   sync.Mutex
+	read []string
+}
+
+func (s *readLogStore) Get(ctx context.Context, key string, r *ByteRange) (Object, error) {
+	if r == nil {
+		s.mu.Lock()
+		s.read = append(s.read, key)
+		s.mu.Unlock()
+	}
+	return s.Store.Get(ctx, key, r)
+}
+
+func TestFindFilterSkipsKeysBeforeReading(t *testing.T) {
+	ctx := context.Background()
+	docs := map[string]string{}
+	for _, key := range []string{"docs/1", "docs/2", "docs/3", "docs/4", "docs/5"} {
+		docs[key] = "猫"
+	}
+	index, store := newQueryIndex(t, docs)
+	source := &readLogStore{Store: store}
+	q := Query{All: [][]string{{"猫"}}}
+	hidden := map[string]bool{"docs/2": true, "docs/4": true}
+	allow := func(key string) bool { return !hidden[key] }
+
+	result, err := index.Find(ctx, source, q, FindOptions{Mode: FindKeys, Limit: 2, Filter: allow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := FindResult{Count: 2, Candidates: 3, Documents: []FoundDocument{{Key: "docs/1"}, {Key: "docs/3"}}, Truncated: true, Next: "docs/3"}
+	if !reflect.DeepEqual(result, want) {
+		t.Fatalf("filtered page:\n got %+v\nwant %+v", result, want)
+	}
+	result, err = index.Find(ctx, source, q, FindOptions{Mode: FindKeys, Limit: 2, After: result.Next, Filter: allow})
+	want = FindResult{Count: 1, Candidates: 1, Documents: []FoundDocument{{Key: "docs/5"}}}
+	if err != nil || !reflect.DeepEqual(result, want) {
+		t.Fatalf("next page: %+v %v", result, err)
+	}
+	for _, key := range source.read {
+		if hidden[key] {
+			t.Fatalf("read excluded document %q (reads %v)", key, source.read)
+		}
+	}
+
+	// Mirror.Find applies the filter to document IDs.
+	mirrorStore := &MemoryStore{}
+	mirrorIndex, err := Open(mirrorStore, "index/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mirror, err := NewMirror(mirrorIndex, mirrorStore, "copies/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mirror.Apply(ctx, []Change{{Key: "public/1", Data: []byte("猫")}, {Key: "private/1", Data: []byte("猫")}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err = mirror.Find(ctx, q, FindOptions{Filter: func(key string) bool { return strings.HasPrefix(key, "public/") }})
+	if err != nil || result.Count != 1 || result.Candidates != 1 || result.Documents[0].Key != "public/1" {
+		t.Fatalf("mirror filter: %+v %v", result, err)
 	}
 }
 
