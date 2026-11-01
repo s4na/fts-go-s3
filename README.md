@@ -162,7 +162,7 @@ zenbun compact -index indexes/articles/
 ```
 
 ```mermaid
-flowchart LR
+flowchart TB
     U1(["更新"]) --> U2["Sync / Apply"]
     U2 --> U3["新しいセグメントを保存"]
     U3 --> U4["manifest を条件付き PUT"]
@@ -177,7 +177,7 @@ flowchart LR
 文字の位置は記録しないため、候補には一致しない文書が混ざることがあります。たとえば `猫犬猫` は `猫犬` と `犬猫` に分かれるので、`猫犬と犬猫` も候補になります。
 
 ```mermaid
-flowchart LR
+flowchart TB
     Q["検索: 猫犬猫"] --> B1["猫犬"]
     Q --> B2["犬猫"]
     B1 --> C{"両方の組を持つ文書"}
@@ -328,7 +328,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-    direction LR
+    direction TB
     live: 使用中（manifest が参照）
     orphan: 未参照
     retired: 印付き（retired/ に印）
