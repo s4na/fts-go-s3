@@ -427,7 +427,8 @@ func (i *Index) Search(ctx context.Context, query string) ([]string, error) {
 	if !utf8.ValidString(query) || query == "" {
 		return nil, errors.New("zenbun: query must be nonempty UTF-8")
 	}
-	return i.SearchQuery(ctx, Query{All: [][]string{{query}}})
+	// Search predates Query and keeps accepting words of any length.
+	return i.searchQuery(ctx, Query{All: [][]string{{query}}})
 }
 
 // SearchQuery returns candidate keys for a structured query in key order. Like
@@ -437,6 +438,10 @@ func (i *Index) SearchQuery(ctx context.Context, q Query) ([]string, error) {
 	if err := q.validate(); err != nil {
 		return nil, err
 	}
+	return i.searchQuery(ctx, q)
+}
+
+func (i *Index) searchQuery(ctx context.Context, q Query) ([]string, error) {
 	groups := q.indexGroups()
 	m, _, err := i.loadManifest(ctx)
 	if err != nil {
