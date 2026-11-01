@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 	"time"
 
 	zenbun "github.com/s4na/fts-go-s3"
@@ -52,7 +55,7 @@ func firstNonEmpty(values ...string) string {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: zenbun {sync|search|compact|reclaim} [options]")
+		return fmt.Errorf("usage: zenbun {sync|search|find|compact|reclaim} [options]")
 	}
 	command := args[0]
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
@@ -65,6 +68,16 @@ func run(args []string) error {
 	source := flags.String("source", "documents/", "source prefix for sync")
 	flags.BoolVar(&config.virtualHost, "virtual-host", false, "use S3 virtual-host addressing")
 	grace := flags.Duration("grace", 24*time.Hour, "reclaim grace period")
+	var findOptions zenbun.FindOptions
+	flags.Func("mode", "find output: snippets, keys or count (default snippets)", func(value string) error {
+		findOptions.Mode = zenbun.FindMode(value)
+		return nil
+	})
+	flags.IntVar(&findOptions.Limit, "limit", 0, "find: maximum matching documents (default 20)")
+	flags.IntVar(&findOptions.Context, "context", 0, "find: lines around each matching line")
+	flags.IntVar(&findOptions.MaxSnippetsPerDoc, "max-snippets", 0, "find: snippets per document (default 3)")
+	flags.IntVar(&findOptions.MaxBytes, "max-bytes", 0, "find: total snippet bytes (default 16384)")
+	flags.StringVar(&findOptions.After, "after", "", "find: continue after this key (a previous result's next)")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -95,6 +108,21 @@ func run(args []string) error {
 			fmt.Println(key)
 		}
 		return nil
+	case "find":
+		if flags.NArg() != 1 {
+			return fmt.Errorf("find requires one JSON query")
+		}
+		query, err := parseQuery(flags.Arg(0))
+		if err != nil {
+			return err
+		}
+		result, err := index.Find(ctx, store, query, findOptions)
+		if err != nil {
+			return err
+		}
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetEscapeHTML(false)
+		return encoder.Encode(result)
 	case "compact":
 		if flags.NArg() != 0 {
 			return fmt.Errorf("compact takes no arguments")
@@ -127,6 +155,21 @@ func run(args []string) error {
 	default:
 		return fmt.Errorf("unknown command %q", command)
 	}
+}
+
+// parseQuery rejects unknown fields so a misspelled condition is not ignored.
+func parseQuery(text string) (zenbun.Query, error) {
+	var query zenbun.Query
+	decoder := json.NewDecoder(strings.NewReader(text))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&query); err != nil {
+		return zenbun.Query{}, fmt.Errorf("invalid query JSON: %w", err)
+	}
+	// More misses a stray closing bracket, so require the end of input instead.
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return zenbun.Query{}, fmt.Errorf("invalid query JSON: trailing data")
+	}
+	return query, nil
 }
 
 func main() {

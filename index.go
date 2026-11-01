@@ -427,16 +427,22 @@ func (i *Index) Search(ctx context.Context, query string) ([]string, error) {
 	if !utf8.ValidString(query) || query == "" {
 		return nil, errors.New("zenbun: query must be nonempty UTF-8")
 	}
-	all := terms(query)
-	var queryTerms []string
-	for _, term := range all {
-		if strings.HasPrefix(term, "b") {
-			queryTerms = append(queryTerms, term)
-		}
+	// Search predates Query and keeps accepting words of any length.
+	return i.searchQuery(ctx, Query{All: [][]string{{query}}})
+}
+
+// SearchQuery returns candidate keys for a structured query in key order. Like
+// Search it may include false positives, and None is not applied: the index
+// cannot prove that a document lacks a word. Use Find to verify bodies.
+func (i *Index) SearchQuery(ctx context.Context, q Query) ([]string, error) {
+	if err := q.validate(); err != nil {
+		return nil, err
 	}
-	if len(queryTerms) == 0 {
-		queryTerms = all
-	}
+	return i.searchQuery(ctx, q)
+}
+
+func (i *Index) searchQuery(ctx context.Context, q Query) ([]string, error) {
+	groups := q.indexGroups()
 	m, _, err := i.loadManifest(ctx)
 	if err != nil {
 		return nil, err
@@ -470,7 +476,7 @@ func (i *Index) Search(ctx context.Context, query string) ([]string, error) {
 				if workCtx.Err() != nil {
 					return
 				}
-				keys, err := searchSegment(workCtx, readers, n, queryTerms)
+				keys, err := searchSegment(workCtx, readers, n, groups, q.KeyPrefix)
 				if err != nil {
 					errorOnce.Do(func() { firstError = err; cancel() })
 					return
@@ -500,36 +506,24 @@ func (i *Index) Search(ctx context.Context, query string) ([]string, error) {
 	return keys, nil
 }
 
-func searchSegment(ctx context.Context, readers []*segmentReader, n int, queryTerms []string) ([]string, error) {
+// searchSegment intersects groups; each group is the union of its words, and
+// each word requires every one of its index terms.
+func searchSegment(ctx context.Context, readers []*segmentReader, n int, groups [][][]string, keyPrefix string) ([]string, error) {
 	var candidates map[string]bool
-	for _, term := range queryTerms {
-		data, found, err := readers[n].lookup(ctx, "t"+term)
-		if err != nil {
-			return nil, err
-		}
-		if !found {
-			return nil, nil
-		}
-		keys, err := readers[n].decodePosting(ctx, data)
-		if err != nil {
-			return nil, err
-		}
-		if candidates == nil {
-			candidates = make(map[string]bool, len(keys))
-			for _, key := range keys {
-				candidates[key] = true
+	for _, group := range groups {
+		union := make(map[string]bool)
+		for _, wordTerms := range group {
+			keys, err := segmentPostings(ctx, readers[n], wordTerms, keyPrefix)
+			if err != nil {
+				return nil, err
 			}
-		} else {
-			present := make(map[string]bool, len(keys))
-			for _, key := range keys {
-				present[key] = true
-			}
-			for key := range candidates {
-				if !present[key] {
-					delete(candidates, key)
+			for key := range keys {
+				if candidates == nil || candidates[key] {
+					union[key] = true
 				}
 			}
 		}
+		candidates = union
 		if len(candidates) == 0 {
 			return nil, nil
 		}
@@ -552,6 +546,46 @@ func searchSegment(ctx context.Context, readers []*segmentReader, n int, queryTe
 		}
 	}
 	return result, nil
+}
+
+// segmentPostings returns keys under keyPrefix whose postings contain every term.
+func segmentPostings(ctx context.Context, reader *segmentReader, queryTerms []string, keyPrefix string) (map[string]bool, error) {
+	var candidates map[string]bool
+	for _, term := range queryTerms {
+		data, found, err := reader.lookup(ctx, "t"+term)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, nil
+		}
+		keys, err := reader.decodePosting(ctx, data)
+		if err != nil {
+			return nil, err
+		}
+		if candidates == nil {
+			candidates = make(map[string]bool, len(keys))
+			for _, key := range keys {
+				if strings.HasPrefix(key, keyPrefix) {
+					candidates[key] = true
+				}
+			}
+		} else {
+			present := make(map[string]bool, len(keys))
+			for _, key := range keys {
+				present[key] = true
+			}
+			for key := range candidates {
+				if !present[key] {
+					delete(candidates, key)
+				}
+			}
+		}
+		if len(candidates) == 0 {
+			return nil, nil
+		}
+	}
+	return candidates, nil
 }
 
 // segmentSnapshot presents the document and metadata ranges without copying
