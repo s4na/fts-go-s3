@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -164,7 +165,8 @@ func parseQuery(text string) (zenbun.Query, error) {
 	if err := decoder.Decode(&query); err != nil {
 		return zenbun.Query{}, fmt.Errorf("invalid query JSON: %w", err)
 	}
-	if decoder.More() {
+	// More misses a stray closing bracket, so require the end of input instead.
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return zenbun.Query{}, fmt.Errorf("invalid query JSON: trailing data")
 	}
 	return query, nil

@@ -36,7 +36,7 @@ func TestParseQuery(t *testing.T) {
 	if err != nil || len(query.All) != 2 || query.All[0][1] != "ネコ" || query.None[0] != "下書き" || query.KeyPrefix != "articles/" {
 		t.Fatalf("parse: %+v %v", query, err)
 	}
-	for _, text := range []string{`{"any":[["猫"]]}`, `{"all":[["猫"]]} {}`, `not json`} {
+	for _, text := range []string{`{"any":[["猫"]]}`, `{"all":[["猫"]]} {}`, `{"all":[["猫"]]}]`, `not json`} {
 		if _, err := parseQuery(text); err == nil {
 			t.Fatalf("accepted %q", text)
 		}
