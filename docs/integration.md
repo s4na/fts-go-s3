@@ -6,7 +6,7 @@ zenbun を既存のアプリ（例: wiki）に検索機能として組み込む�
 - **MCP 経由の検索**：LLM がツールとして検索し、抜粋を読んで必要な部分だけを追加で読む。
 
 > [!NOTE]
-> この文書は `FindOptions.Filter`、`FindOptions.Concurrency`、`Read`、`FindOptions.Matches`を前提にしています。
+> この文書は `FindOptions.Filter`、`FindOptions.Concurrency`、`Read`、`FindOptions.Matches` を前提にしています。
 
 ## 構成
 
