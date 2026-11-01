@@ -2,11 +2,8 @@
 
 zenbun を既存のアプリ（例: wiki）に検索機能として組み込むときに、運用で決めることをまとめます。ここでは、次の 2 つの使い方を想定します。
 
-- **手動検索**：利用者が画面から検索し、結果をハイライト付きで一覧する。
+- **手動検索**：利用者が画面から検索し、結果を一覧する。
 - **MCP 経由の検索**：LLM がツールとして検索し、抜粋を読んで必要な部分だけを追加で読む。
-
-> [!NOTE]
-> この文書は `FindOptions.Filter`、`FindOptions.Concurrency`、`Read`、`FindOptions.Matches` を前提にしています。
 
 ## 構成
 
@@ -17,7 +14,7 @@ flowchart LR
     App[アプリ] -->|保存| DB[(DB)]
     App -->|変換したテキスト| Mirror[Mirror.Apply]
     Mirror --> Bucket[(バケット: 本文のコピーと索引)]
-    UI[検索画面] -->|Find + Matches| Bucket
+    UI[検索画面] -->|Find| Bucket
     MCP[MCP ツール] -->|Find / Read| Bucket
 ```
 
@@ -37,21 +34,28 @@ flowchart LR
 キーはアプリのページ ID から作ります。たとえば `spaces/<スペースID>/pages/<ページID>` のようにすると、次のことができます。
 
 - スペースで絞り込む：`Query.KeyPrefix`
-- 権限で絞り込む：`FindOptions.Filter`（下記）
+- 権限で絞り込む：キーのスペース ID で判断する（下記）
 - キーから DB の行を引く：結果の `Key` を分解する
 
 `Mirror` の文書 ID には、空の要素・`.`・`..` を含められません。
 
 ## 権限による絞り込み
 
-利用者が見てよい文書だけを返すには、`FindOptions.Filter` を設定します。除いたキーは本文を読まず、件数にも `Next` にも出ません。
+zenbun は権限を管理しません。誰がどの文書を見てよいかはアプリが判断し、検索の範囲を絞ります。
+
+権限がスペース単位なら、利用者が見てよいスペースごとに `Query.KeyPrefix` を付けて検索します。
 
 ```go
-result, err := mirror.Find(ctx, query, zenbun.FindOptions{
-    Limit:  20,
-    Filter: func(key string) bool { return user.CanRead(key) },
-})
+result, err := mirror.Find(ctx, zenbun.Query{
+    All:       [][]string{{word}},
+    KeyPrefix: "spaces/" + spaceID + "/",
+}, zenbun.FindOptions{Limit: 20})
 ```
+
+`KeyPrefix` で表せない権限を、検索結果を受け取ってから除く形で扱う場合は、次の点に注意します。
+
+- 除いた分だけ、1 ページの件数が `Limit` より少なくなります。
+- `Count`・`Candidates`・`Next` には除いた文書も含まれるので、そのまま利用者に見せると、見えない文書の存在が分かります。
 
 `Read` は権限を確認しません。キーを受け取ったら、呼び出す前に確認してください。
 
@@ -97,14 +101,11 @@ err := mirror.Apply(ctx, []zenbun.Change{
 result, err := mirror.Find(ctx, zenbun.Query{All: [][]string{{word}}}, zenbun.FindOptions{
     Limit:       20,
     Context:     1,
-    Matches:     true, // ハイライト用
     Concurrency: 8,
-    Filter:      allow,
     After:       cursor,
 })
 ```
 
-- **ハイライト**：`Snippet.Matches` は、`Text` 上のバイト位置です。画面が JavaScript なら、サーバー側で UTF-16 の位置に変換するか、`Text` を範囲で分割してから送ります。
 - **並び順**：結果はキー順です。タイトルに一致したページを上に出したい場合は、タイトル検索をアプリの DB で別に行い、本文検索の結果と合わせます。更新日時順にしたい場合は、`FindKeys` でキーを集め、DB の更新日時で並べ替えます。
 - **件数**：`Candidates` は本文で確かめる前の上限です。正確な件数（`FindCount`）は全候補の本文を読むので、画面では「`Count` 件以上」や「さらに表示」の形にするのが現実的です。
 - **続き**：`Truncated` なら `Next` を次のページのカーソルにします。前のページへ戻るには、アプリ側で過去のカーソルを覚えておきます。
@@ -112,7 +113,7 @@ result, err := mirror.Find(ctx, zenbun.Query{All: [][]string{{word}}}, zenbun.Fi
 
 ## MCP のツールにする
 
-`Query` と `FindOptions` には JSON タグがあるので、ツールの引数をそのまま使えます。**`Filter` と `Concurrency` は JSON では指定できない**ので、LLM が権限を外すことはできません。アプリ側で、ツールを呼んだ利用者に合わせて設定します。
+`Query` と `FindOptions` には JSON タグがあるので、ツールの引数をそのまま使えます。**`Concurrency` は JSON では指定できない**ので、LLM がストレージへの負荷を上げることはできません。検索の範囲（`KeyPrefix`）は LLM の入力で変えられるので、権限に関わる場合はアプリ側で上書きします。
 
 ```go
 type findArgs struct {
@@ -127,7 +128,7 @@ func handleFind(ctx context.Context, user User, raw json.RawMessage) (zenbun.Fin
     if err := decoder.Decode(&args); err != nil {
         return zenbun.FindResult{}, err
     }
-    args.Options.Filter = user.CanRead // LLM の入力より後に設定する
+    args.Query.KeyPrefix = user.SpacePrefix() // LLM の入力より後に設定する
     args.Options.Concurrency = 8
     return mirror.Find(ctx, args.Query, args.Options)
 }
@@ -140,5 +141,4 @@ func handleFind(ctx context.Context, user User, raw json.RawMessage) (zenbun.Fin
 | `find` | `Query` と `FindOptions` を受け取り、抜粋を返す。言い換えや表記ゆれは LLM が `All` の同じグループに並べる |
 | `read` | キーと行範囲を受け取り、`Read` の結果を返す。`find` の抜粋の前後を読むときや、`Lines` が抜粋の数より多いときに使う |
 
-- `Matches` は LLM には不要なことが多いので、指定しなくて構いません。
 - `MaxBytes` や `Limit` の上限は、アプリ側でも上書きして抑えておくと、コンテキストの使いすぎを防げます。
