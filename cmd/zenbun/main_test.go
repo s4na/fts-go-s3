@@ -30,3 +30,15 @@ func TestNewStoreSelectsAdapter(t *testing.T) {
 		t.Fatal("unknown storage accepted")
 	}
 }
+
+func TestParseQuery(t *testing.T) {
+	query, err := parseQuery(`{"all":[["猫","ネコ"],["請求書"]],"none":["下書き"],"key_prefix":"articles/"}`)
+	if err != nil || len(query.All) != 2 || query.All[0][1] != "ネコ" || query.None[0] != "下書き" || query.KeyPrefix != "articles/" {
+		t.Fatalf("parse: %+v %v", query, err)
+	}
+	for _, text := range []string{`{"any":[["猫"]]}`, `{"all":[["猫"]]} {}`, `not json`} {
+		if _, err := parseQuery(text); err == nil {
+			t.Fatalf("accepted %q", text)
+		}
+	}
+}

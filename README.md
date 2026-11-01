@@ -130,6 +130,7 @@ zenbun compact -index indexes/articles/
 - [索引を更新する](#索引を更新する)
 - [本文のコピーも管理する Mirror](#本文のコピーも管理する-mirror)
 - [候補を本文で確認する](#候補を本文で確認する)
+- [条件を組み合わせて検索する Find](#条件を組み合わせて検索する-find)
 - [同時更新と競合](#同時更新と競合)
 - [索引の手入れ](#索引の手入れ)
 - [ストレージアダプター](#ストレージアダプター)
@@ -197,6 +198,7 @@ flowchart TB
 | Firebase などの外部データの本文を S3 にコピーし、索引も一緒に更新する | `Mirror.Apply` |
 | 候補キーだけ欲しい（本文の確認は自分でする） | `Index.Search` |
 | 本文を確認済みの結果が欲しい | `Mirror.Search` / `Mirror.SearchLimit` |
+| 複数の語を AND・OR・NOT で組み合わせ、一致した行だけ欲しい（LLM のツールなど） | `Index.Find` / `Mirror.Find` |
 | 統合・不要データの削除 | `Index.Compact` / `Index.Reclaim` |
 
 ## 索引を更新する
@@ -292,6 +294,63 @@ func containsQuery(body, query string) bool {
 ```
 
 これは**正規化後の一致**の確認です。文字幅や大文字・小文字まで区別したい場合は、元の本文と検索文字列で追加の確認をしてください。本文の確認では、新規追加・更新に伴う取りこぼしは補えません。先に索引へ変更を反映してください。
+
+## 条件を組み合わせて検索する Find
+
+`Find` は、複数の語の組み合わせを 1 回で検索し、本文で一致を確かめた結果を返します。返す量も指定できます。LLM がツールとして検索するとき、何度も検索して結果を突き合わせずに済むので、コンテキストを節約できます。
+
+```go
+query := zenbun.Query{
+    All:       [][]string{{"猫", "ネコ", "cat"}, {"請求書", "インボイス"}},
+    None:      []string{"下書き"},
+    KeyPrefix: "articles/2026/",
+}
+result, err := index.Find(ctx, store, query, zenbun.FindOptions{Context: 1})
+if err != nil {
+    log.Fatal(err)
+}
+for _, doc := range result.Documents {
+    for _, s := range doc.Snippets {
+        fmt.Printf("%s:%d\n%s\n", doc.Key, s.Line, s.Text)
+    }
+}
+if result.Truncated {
+    // 続きは FindOptions{After: result.Next} で取得する。
+}
+```
+
+- **`All`**：内側の配列が 1 つの概念を表し、その中の語はどれか 1 つを含めば一致します（OR）。概念どうしは、すべてを含む必要があります（AND）。言い換えや表記ゆれは、同じ概念の中に並べてください。
+- **`None`**：このどれかを含む文書は除きます。索引では除外できないため、本文を確認するときに除きます。
+- **`KeyPrefix`**：キーの前方一致で絞り込みます。`Mirror.Find` では文書 ID に対して効きます。
+- 語の一致は `Search` と同じく、NFKC 正規化と小文字化のあとの部分一致です。
+
+| `FindOptions` | 内容 | 既定値 |
+|---|---|---|
+| `Mode` | `snippets`（一致した行と前後の行）・`keys`（キーだけ）・`count`（件数だけ） | `snippets` |
+| `Limit` | 本文で一致を確認できた文書がこの数に達したら止める | 20 |
+| `Context` | 一致した行の前後に付ける行数（最大 20） | 0 |
+| `MaxSnippetsPerDoc` | 1 文書あたりの抜粋の数 | 3 |
+| `MaxBytes` | 抜粋の合計バイト数。超えた分は文字の途中で切らずに打ち切る | 16 KiB |
+| `After` | このキーより後から検索する。前回の結果の `Next` を渡す | なし |
+
+- 結果は**キー順**で、関連度による順位はありません。
+- `Candidates` は、索引で絞った候補の数です。本文で確認する前の上限の目安になります。
+- 件数か抜粋の量の上限で止まった場合、`Truncated` が `true` になり、`Next` に続きの開始位置が入ります。`Lines` は、その文書の中で語を含む行の数です。
+- `Index.Find` は、`Sync` で同期した同期元の本文を読みます。同期後に削除された文書は結果から外し、エラーにはしません。`Mirror.Find` は、コピーが見つからない場合にエラーを返します。
+- 候補 1 件ごとに本文を 1 回 GET します。`Limit` 件の一致が見つかった時点で読むのを止めますが、`None` で多くの候補が外れる検索では、多くの本文を読むことがあります。
+- 1 回の検索で使える語は合計 64 個まで、概念は 16 個までです。語の長さは 256 バイトまでです。
+- 索引だけで候補キーが欲しい場合は `Index.SearchQuery` を使います（`None` は適用されません）。
+
+コマンドラインでは、クエリを JSON で渡し、結果を JSON で受け取ります。LLM のツールとして呼ぶ場合に便利です。未知のフィールドはエラーにします。
+
+```sh
+zenbun find -index indexes/articles/ -context 1 -limit 10 \
+  '{"all":[["猫","ネコ"],["請求書"]],"none":["下書き"],"key_prefix":"articles/"}'
+```
+
+```json
+{"count":1,"candidates":2,"documents":[{"key":"articles/a.txt","lines":1,"snippets":[{"line":2,"text":"前の行\n猫の請求書です\n次の行"}]}]}
+```
 
 ## 同時更新と競合
 
@@ -419,6 +478,7 @@ go install github.com/s4na/fts-go-s3/cmd/zenbun@latest
 |---|---|
 | `zenbun sync -source <prefix> -index <prefix>` | 同期元を索引に反映（競合時は最大 3 回再試行） |
 | `zenbun search -index <prefix> <query>` | 候補キーを 1 行に 1 つ表示 |
+| `zenbun find -index <prefix> [-mode -limit -context -max-snippets -max-bytes -after] '<JSON>'` | 条件を組み合わせて検索し、本文で確認した結果を JSON で表示（[Find](#条件を組み合わせて検索する-find)） |
 | `zenbun compact -index <prefix>` | まとめられるセグメントがなくなるまでコンパクション |
 | `zenbun reclaim -index <prefix> -grace <期間>` | 不要なセグメントを回収（`-grace` は `24h` や `90m` の形式、既定値 `24h`） |
 
