@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
@@ -20,6 +21,8 @@ const (
 	defaultFindLimit   = 20
 	defaultFindBytes   = 16 << 10
 	defaultFindSnippet = 3
+	defaultFindReads   = 4
+	maxFindReads       = 64
 )
 
 // Query selects documents that contain, for every group in All, at least one
@@ -124,6 +127,11 @@ const (
 // count toward neither Count, Candidates nor Limit, and never become Next, so
 // a result reveals nothing about them. It is for the application to set, such
 // as from access rights, and is never decoded from JSON.
+//
+// Concurrency is the number of bodies read at once, 4 by default and at most
+// 64. Results stay in key order; once Find stops, it cancels reads ahead of
+// the stopping point, so it makes at most Concurrency-1 extra reads. It is a
+// load setting for the application and is never decoded from JSON.
 type FindOptions struct {
 	Mode              FindMode          `json:"mode,omitempty"`
 	Limit             int               `json:"limit,omitempty"`
@@ -132,6 +140,7 @@ type FindOptions struct {
 	MaxBytes          int               `json:"max_bytes,omitempty"`
 	After             string            `json:"after,omitempty"`
 	Filter            func(string) bool `json:"-"`
+	Concurrency       int               `json:"-"`
 }
 
 // Snippet is consecutive lines of a document starting at the 1-based Line.
@@ -172,6 +181,12 @@ func (o FindOptions) withDefaults() (FindOptions, error) {
 	if o.Limit < 0 || o.Context < 0 || o.Context > maxFindContext || o.MaxSnippetsPerDoc < 0 || o.MaxBytes < 0 {
 		return o, fmt.Errorf("zenbun: find limits must be nonnegative and context at most %d", maxFindContext)
 	}
+	if o.Concurrency < 0 || o.Concurrency > maxFindReads {
+		return o, fmt.Errorf("zenbun: find concurrency must be 0 to %d", maxFindReads)
+	}
+	if o.Concurrency == 0 {
+		o.Concurrency = defaultFindReads
+	}
 	if o.Limit == 0 {
 		o.Limit = defaultFindLimit
 	}
@@ -187,7 +202,8 @@ func (o FindOptions) withDefaults() (FindOptions, error) {
 // Find verifies SearchQuery candidates against the source documents last
 // synchronized from source. Keys are source keys. A document deleted since the
 // last Sync is skipped; a body that no longer matches is not returned. It makes
-// one full-document GET per checked candidate and stops after Limit matches.
+// one full-document GET per checked candidate, up to Concurrency at once, and
+// stops after Limit matches.
 func (i *Index) Find(ctx context.Context, source Store, q Query, options FindOptions) (FindResult, error) {
 	if source == nil {
 		return FindResult{}, errors.New("zenbun: source is required")
@@ -206,7 +222,7 @@ func (i *Index) Find(ctx context.Context, source Store, q Query, options FindOpt
 
 // Find verifies candidates against the document copies. As with Search, a
 // missing copy is an error. It makes one full-document GET per checked
-// candidate and stops after Limit matches.
+// candidate, up to Concurrency at once, and stops after Limit matches.
 func (m *Mirror) Find(ctx context.Context, q Query, options FindOptions) (FindResult, error) {
 	return find(ctx, m.index, q, options, func(ctx context.Context, key string) ([]byte, bool, error) {
 		obj, err := m.store.Get(ctx, m.prefix+key, nil)
@@ -241,14 +257,17 @@ func find(ctx context.Context, index *Index, q Query, options FindOptions, read 
 	}
 	result := FindResult{Candidates: len(keys)}
 	budget := options.MaxBytes
+	bodies := readAhead(ctx, keys, options.Concurrency, read)
+	defer bodies.stop()
 	for n, key := range keys {
-		data, found, err := read(ctx, key)
-		if err != nil {
-			return FindResult{}, err
+		body := bodies.next()
+		if body.err != nil {
+			return FindResult{}, body.err
 		}
-		if !found {
+		if !body.found {
 			continue
 		}
+		data := body.data
 		if !utf8.Valid(data) {
 			return FindResult{}, fmt.Errorf("zenbun: document %q is not valid UTF-8", key)
 		}
@@ -276,6 +295,54 @@ func find(ctx context.Context, index *Index, q Query, options FindOptions, read 
 		}
 	}
 	return result, nil
+}
+
+type readBody struct {
+	data  []byte
+	found bool
+	err   error
+}
+
+// readAheadQueue reads bodies concurrently but hands them out in key order.
+// It keeps at most n reads started and not yet handed out.
+type readAheadQueue struct {
+	ctx     context.Context
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+	keys    []string
+	n       int
+	read    func(context.Context, string) ([]byte, bool, error)
+	pending []chan readBody
+	started int
+}
+
+func readAhead(ctx context.Context, keys []string, n int, read func(context.Context, string) ([]byte, bool, error)) *readAheadQueue {
+	ctx, cancel := context.WithCancel(ctx)
+	return &readAheadQueue{ctx: ctx, cancel: cancel, keys: keys, n: n, read: read}
+}
+
+// next returns the body of the next key. Call it at most len(keys) times.
+func (q *readAheadQueue) next() readBody {
+	for q.started < len(q.keys) && len(q.pending) < q.n {
+		key, ch := q.keys[q.started], make(chan readBody, 1)
+		q.wg.Add(1)
+		go func() {
+			defer q.wg.Done()
+			data, found, err := q.read(q.ctx, key)
+			ch <- readBody{data, found, err}
+		}()
+		q.pending = append(q.pending, ch)
+		q.started++
+	}
+	body := <-q.pending[0]
+	q.pending = q.pending[1:]
+	return body
+}
+
+// stop cancels reads not handed out and waits for them to return.
+func (q *readAheadQueue) stop() {
+	q.cancel()
+	q.wg.Wait()
 }
 
 // matchDocument checks the whole normalized body, then collects matching
