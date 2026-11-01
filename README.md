@@ -131,6 +131,7 @@ zenbun compact -index indexes/articles/
 - [本文のコピーも管理する Mirror](#本文のコピーも管理する-mirror)
 - [候補を本文で確認する](#候補を本文で確認する)
 - [条件を組み合わせて検索する Find](#条件を組み合わせて検索する-find)
+- [行範囲を指定して読む Read](#行範囲を指定して読む-read)
 - [同時更新と競合](#同時更新と競合)
 - [索引の手入れ](#索引の手入れ)
 - [ストレージアダプター](#ストレージアダプター)
@@ -353,6 +354,44 @@ zenbun find -index indexes/articles/ -context 1 -limit 10 \
 {"count":1,"candidates":2,"documents":[{"key":"articles/a.txt","lines":1,"snippets":[{"line":2,"text":"前の行\n猫の請求書です\n次の行"}]}]}
 ```
 
+## 行範囲を指定して読む Read
+
+`Read` は、1 つの文書から行範囲を指定して読みます。`Find` の抜粋の前後をもう少し読みたいときや、`MaxSnippetsPerDoc` で省かれた行を読みたいときに、本文全体を取得せずに済みます。
+
+```go
+doc := result.Documents[0]
+line := doc.Snippets[0].Line
+r, err := index.Read(ctx, store, doc.Key, zenbun.ReadOptions{Start: line - 5, End: line + 20})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(r.Text)
+if r.Next != 0 {
+    // 続きは ReadOptions{Start: r.Next, End: ...} で読む。
+}
+```
+
+| `ReadOptions` | 内容 | 既定値 |
+|---|---|---|
+| `Start` | 最初の行（1 始まり）。`Snippet.Line` と同じ番号 | 必須 |
+| `End` | 最後の行。文書の行数を超えた分は無視する | 文書の最後 |
+| `MaxBytes` | `Text` の最大バイト数。収まらない行から先は返さない | 16 KiB |
+
+- 行の区切り方は `Find` の抜粋と同じです。`\n` で区切り、`\r` は除きます。`Lines` は文書全体の行数です。
+- `MaxBytes` で切った場合は `Truncated` が `true` になり、`Next` に続きの開始行が入ります。最初の 1 行だけで `MaxBytes` を超える場合は、その行を文字の途中で切らない位置で打ち切り、`Next` は次の行になります（残りは読めません）。
+- `Start` が 1 未満か文書の行数を超える場合、`End` が `Start` より前の場合はエラーです。文書がない場合は `ErrNotFound` を包んだエラーを返します。
+- `Index.Read` は索引を確認せず、`source` の任意のキーを読みます。LLM などから受け取ったキーを渡す場合は、呼び出す前に閲覧権限を確認してください。`Mirror.Read` は文書 ID の形式（空・`.`・`..` の要素を含まない）を確認します。
+
+コマンドラインでは、結果を JSON で表示します。
+
+```sh
+zenbun read -index indexes/articles/ -start 10 -end 30 articles/a.txt
+```
+
+```json
+{"key":"articles/a.txt","start":10,"text":"…","lines":120}
+```
+
 ## 同時更新と競合
 
 索引の部品（セグメント）を先に保存し、最後に**マニフェスト**を条件付き PUT で差し替えます。
@@ -480,6 +519,7 @@ go install github.com/s4na/fts-go-s3/cmd/zenbun@latest
 | `zenbun sync -source <prefix> -index <prefix>` | 同期元を索引に反映（競合時は最大 3 回再試行） |
 | `zenbun search -index <prefix> <query>` | 候補キーを 1 行に 1 つ表示 |
 | `zenbun find -index <prefix> [-mode -limit -context -max-snippets -max-bytes -after] '<JSON>'` | 条件を組み合わせて検索し、本文で確認した結果を JSON で表示（[Find](#条件を組み合わせて検索する-find)） |
+| `zenbun read -index <prefix> [-start -end -max-bytes] <key>` | 文書の行範囲を JSON で表示（[Read](#行範囲を指定して読む-read)） |
 | `zenbun compact -index <prefix>` | まとめられるセグメントがなくなるまでコンパクション |
 | `zenbun reclaim -index <prefix> -grace <期間>` | 不要なセグメントを回収（`-grace` は `24h` や `90m` の形式、既定値 `24h`） |
 

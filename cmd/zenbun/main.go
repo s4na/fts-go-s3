@@ -55,7 +55,7 @@ func firstNonEmpty(values ...string) string {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: zenbun {sync|search|find|compact|reclaim} [options]")
+		return fmt.Errorf("usage: zenbun {sync|search|find|read|compact|reclaim} [options]")
 	}
 	command := args[0]
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
@@ -76,8 +76,11 @@ func run(args []string) error {
 	flags.IntVar(&findOptions.Limit, "limit", 0, "find: maximum matching documents (default 20)")
 	flags.IntVar(&findOptions.Context, "context", 0, "find: lines around each matching line")
 	flags.IntVar(&findOptions.MaxSnippetsPerDoc, "max-snippets", 0, "find: snippets per document (default 3)")
-	flags.IntVar(&findOptions.MaxBytes, "max-bytes", 0, "find: total snippet bytes (default 16384)")
+	flags.IntVar(&findOptions.MaxBytes, "max-bytes", 0, "find, read: total text bytes (default 16384)")
 	flags.StringVar(&findOptions.After, "after", "", "find: continue after this key (a previous result's next)")
+	var readOptions zenbun.ReadOptions
+	flags.IntVar(&readOptions.Start, "start", 1, "read: first line, from 1")
+	flags.IntVar(&readOptions.End, "end", 0, "read: last line (default the end of the document)")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -117,6 +120,18 @@ func run(args []string) error {
 			return err
 		}
 		result, err := index.Find(ctx, store, query, findOptions)
+		if err != nil {
+			return err
+		}
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetEscapeHTML(false)
+		return encoder.Encode(result)
+	case "read":
+		if flags.NArg() != 1 {
+			return fmt.Errorf("read requires one key")
+		}
+		readOptions.MaxBytes = findOptions.MaxBytes
+		result, err := index.Read(ctx, store, flags.Arg(0), readOptions)
 		if err != nil {
 			return err
 		}
