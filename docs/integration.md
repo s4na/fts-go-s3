@@ -2,7 +2,7 @@
 
 zenbun を既存のアプリ（例: wiki）に検索機能として組み込むときに、運用で決めることをまとめます。ここでは、次の 2 つの使い方を想定します。
 
-- **手動検索**：利用者が画面から検索し、結果を一覧する。
+- **手動検索**：利用者が画面から検索し、結果をハイライト付きで一覧する。
 - **MCP 経由の検索**：LLM がツールとして検索し、抜粋を読んで必要な部分だけを追加で読む。
 
 ## 構成
@@ -14,7 +14,7 @@ flowchart LR
     App[アプリ] -->|保存| DB[(DB)]
     App -->|変換したテキスト| Mirror[Mirror.Apply]
     Mirror --> Bucket[(バケット: 本文のコピーと索引)]
-    UI[検索画面] -->|Find| Bucket
+    UI[検索画面] -->|Find + Matches| Bucket
     MCP[MCP ツール] -->|Find / Read| Bucket
 ```
 
@@ -101,11 +101,13 @@ err := mirror.Apply(ctx, []zenbun.Change{
 result, err := mirror.Find(ctx, zenbun.Query{All: [][]string{{word}}}, zenbun.FindOptions{
     Limit:       20,
     Context:     1,
+    Matches:     true, // ハイライト用
     Concurrency: 8,
     After:       cursor,
 })
 ```
 
+- **ハイライト**：`Snippet.Matches` は、`Text` 上のバイト位置です。画面が JavaScript なら、サーバー側で UTF-16 の位置に変換するか、`Text` を範囲で分割してから送ります。
 - **並び順**：結果はキー順です。タイトルに一致したページを上に出したい場合は、タイトル検索をアプリの DB で別に行い、本文検索の結果と合わせます。更新日時順にしたい場合は、`FindKeys` でキーを集め、DB の更新日時で並べ替えます。
 - **件数**：`Candidates` は本文で確かめる前の上限です。正確な件数（`FindCount`）は全候補の本文を読むので、画面では「`Count` 件以上」や「さらに表示」の形にするのが現実的です。
 - **続き**：`Truncated` なら `Next` を次のページのカーソルにします。前のページへ戻るには、アプリ側で過去のカーソルを覚えておきます。
@@ -141,4 +143,5 @@ func handleFind(ctx context.Context, user User, raw json.RawMessage) (zenbun.Fin
 | `find` | `Query` と `FindOptions` を受け取り、抜粋を返す。言い換えや表記ゆれは LLM が `All` の同じグループに並べる |
 | `read` | キーと行範囲を受け取り、`Read` の結果を返す。`find` の抜粋の前後を読むときや、`Lines` が抜粋の数より多いときに使う |
 
+- `Matches` は LLM には不要なことが多いので、指定しなくて構いません。
 - `MaxBytes` や `Limit` の上限は、アプリ側でも上書きして抑えておくと、コンテキストの使いすぎを防げます。

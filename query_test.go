@@ -264,7 +264,7 @@ func TestFindBoundsSnippets(t *testing.T) {
 	})
 	q := Query{All: [][]string{{"猫"}}}
 	result, err := index.Find(ctx, store, q, FindOptions{MaxSnippetsPerDoc: 2})
-	if err != nil || result.Documents[0].Lines != 4 || len(result.Documents[0].Snippets) != 2 || result.Documents[0].Snippets[1] != (Snippet{Line: 3, Text: "猫2"}) {
+	if err != nil || result.Documents[0].Lines != 4 || len(result.Documents[0].Snippets) != 2 || !reflect.DeepEqual(result.Documents[0].Snippets[1], Snippet{Line: 3, Text: "猫2"}) {
 		t.Fatalf("snippets per document: %+v %v", result, err)
 	}
 	// Adjacent context windows merge into one snippet.
@@ -280,6 +280,68 @@ func TestFindBoundsSnippets(t *testing.T) {
 	result, err = index.Find(ctx, store, q, FindOptions{MaxSnippetsPerDoc: 1, MaxBytes: 4})
 	if err != nil || !result.Truncated || result.Next != "docs/a" || result.Count != 1 {
 		t.Fatalf("exhausted budget: %+v %v", result, err)
+	}
+}
+
+func TestFindReturnsMatchRangesInOriginalText(t *testing.T) {
+	ctx := context.Background()
+	index, store := newQueryIndex(t, map[string]string{
+		"docs/a": "前置き\r\nＡＢＣとabcとｶﾞｲﾄﾞ\r\n㍿の猫猫",
+	})
+	q := Query{All: [][]string{{"abc", "ガイド", "株式", "猫猫"}}}
+	result, err := index.Find(ctx, store, q, FindOptions{Context: 1, Matches: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snippet := result.Documents[0].Snippets[0]
+	var got []string
+	for _, m := range snippet.Matches {
+		got = append(got, snippet.Text[m.Start:m.End])
+	}
+	// ㍿ normalizes to 株式会社, so a match of 株式 covers the whole character.
+	want := []string{"ＡＢＣ", "abc", "ｶﾞｲﾄﾞ", "㍿", "猫猫"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("matched text: %q, want %q (snippet %+v)", got, want, snippet)
+	}
+
+	// Matches are omitted unless requested.
+	result, err = index.Find(ctx, store, q, FindOptions{})
+	if err != nil || result.Documents[0].Snippets[0].Matches != nil {
+		t.Fatalf("matches without the option: %+v %v", result, err)
+	}
+	// A match beyond the byte budget is dropped with the cut text.
+	result, err = index.Find(ctx, store, q, FindOptions{Context: 1, Matches: true, MaxBytes: 22})
+	if err != nil || !result.Truncated {
+		t.Fatalf("cut snippet: %+v %v", result, err)
+	}
+	snippet = result.Documents[0].Snippets[0]
+	if len(snippet.Matches) != 1 || snippet.Text[snippet.Matches[0].Start:snippet.Matches[0].End] != "ＡＢＣ" {
+		t.Fatalf("matches in cut snippet: %+v", snippet)
+	}
+}
+
+func TestMatchRangesMergeOverlaps(t *testing.T) {
+	// 猫猫 occurs at 0 and 1 in 猫猫猫, and 猫犬 touches the end of it.
+	got := matchRanges("猫猫猫犬と猫", []string{"猫猫", "猫犬"})
+	want := []Match{{Start: 0, End: 12}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("merged ranges: %+v, want %+v", got, want)
+	}
+	if got := matchRanges("ﾊﾟﾝとパン", []string{"パン"}); !reflect.DeepEqual(got, []Match{{0, 9}, {12, 18}}) {
+		t.Fatalf("half-width kana: %+v", got)
+	}
+	// ㍿ expands to 株式会社, so 株式 and 社 both cover the whole character.
+	if got := matchRanges("x㍿y", []string{"株式", "社"}); !reflect.DeepEqual(got, []Match{{1, 4}}) {
+		t.Fatalf("pieces of one expansion: %+v", got)
+	}
+	// Every byte starts an occurrence of every word, and the result is still
+	// one range.
+	words := make([]string, 64)
+	for i := range words {
+		words[i] = "a"
+	}
+	if got := matchRanges(strings.Repeat("a", 100000), words); !reflect.DeepEqual(got, []Match{{0, 100000}}) {
+		t.Fatalf("repeated occurrences: %+v", got)
 	}
 }
 

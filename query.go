@@ -121,7 +121,8 @@ const (
 // FindOptions bounds what Find reads and returns. Zero values select the
 // defaults: snippets, 20 documents, 3 snippets per document and 16 KiB of
 // snippet text. Context is the number of lines around each matching line.
-// After continues from a previous result's Next.
+// After continues from a previous result's Next. Matches adds each snippet's
+// matching ranges, such as for highlighting.
 //
 // Concurrency is the number of bodies read at once, 4 by default and at most
 // 64. Results stay in key order; once Find stops, it cancels reads ahead of
@@ -135,12 +136,24 @@ type FindOptions struct {
 	MaxBytes          int      `json:"max_bytes,omitempty"`
 	After             string   `json:"after,omitempty"`
 	Concurrency       int      `json:"-"`
+	Matches           bool     `json:"matches,omitempty"`
 }
 
 // Snippet is consecutive lines of a document starting at the 1-based Line.
+// Matches, when requested, lists the ranges of Text that match a word from
+// All, in order and without overlaps.
 type Snippet struct {
-	Line int    `json:"line"`
-	Text string `json:"text"`
+	Line    int     `json:"line"`
+	Text    string  `json:"text"`
+	Matches []Match `json:"matches,omitempty"`
+}
+
+// Match is the byte range Text[Start:End] of the original text, before
+// normalization, that matches a word. It covers whole characters even when
+// normalization changes their length, such as ㍿ matching 株式.
+type Match struct {
+	Start int `json:"start"`
+	End   int `json:"end"`
 }
 
 // FoundDocument is a verified match. Lines counts lines containing a word from
@@ -376,19 +389,96 @@ func matchDocument(key, body string, q Query, options FindOptions, budget *int) 
 		}
 		text := strings.Join(lines[first:last+1], "\n")
 		text = strings.ReplaceAll(text, "\r", "")
+		var matches []Match
+		if options.Matches {
+			offset := 0
+			for _, line := range lines[first : last+1] {
+				line = strings.ReplaceAll(line, "\r", "")
+				for _, m := range matchRanges(line, words) {
+					matches = append(matches, Match{Start: offset + m.Start, End: offset + m.End})
+				}
+				offset += len(line) + 1
+			}
+		}
 		if len(text) > *budget {
 			cut := *budget
 			for cut > 0 && !utf8.RuneStart(text[cut]) {
 				cut--
 			}
 			if cut > 0 {
-				doc.Snippets = append(doc.Snippets, Snippet{Line: first + 1, Text: text[:cut]})
+				kept := matches[:0]
+				for _, m := range matches {
+					if m.End <= cut {
+						kept = append(kept, m)
+					}
+				}
+				doc.Snippets = append(doc.Snippets, Snippet{Line: first + 1, Text: text[:cut], Matches: kept})
 			}
 			*budget = -1
 			break
 		}
 		*budget -= len(text)
-		doc.Snippets = append(doc.Snippets, Snippet{Line: first + 1, Text: text})
+		doc.Snippets = append(doc.Snippets, Snippet{Line: first + 1, Text: text, Matches: matches})
 	}
 	return doc, true
+}
+
+// matchRanges returns the byte ranges of line where a normalized word occurs
+// in the normalized line, merged so that they neither overlap nor touch. It
+// normalizes one segment at a time to map each normalized byte back to the
+// whole characters it came from.
+func matchRanges(line string, words []string) []Match {
+	var it norm.Iter
+	it.InitString(norm.NFKC, line)
+	var normalized strings.Builder
+	var from, to []int // the original characters of each normalized byte
+	start, pending := 0, 0
+	for !it.Done() {
+		segment := strings.ToLower(string(it.Next()))
+		normalized.WriteString(segment)
+		pending += len(segment)
+		// A long expansion such as ㍿ comes in several pieces, and only the
+		// last one advances the position in line.
+		if end := it.Pos(); end > start || it.Done() {
+			for range pending {
+				from, to = append(from, start), append(to, end)
+			}
+			start, pending = end, 0
+		}
+	}
+	text := normalized.String()
+	// reach[i] is one past the furthest normalized byte that an occurrence
+	// starting at i covers, so repeated occurrences cost no extra memory.
+	reach := make([]int, len(text))
+	seen := make(map[string]bool, len(words))
+	for _, word := range words {
+		if word == "" || seen[word] {
+			continue
+		}
+		seen[word] = true
+		for at := 0; ; {
+			i := strings.Index(text[at:], word)
+			if i < 0 {
+				break
+			}
+			first := at + i
+			reach[first] = max(reach[first], first+len(word))
+			_, size := utf8.DecodeRuneInString(text[first:])
+			at = first + size
+		}
+	}
+	var merged []Match
+	for i, end := 0, 0; i < len(text); i++ {
+		if reach[i] <= end {
+			continue
+		}
+		r := Match{Start: from[max(i, end)], End: to[reach[i]-1]}
+		end = reach[i]
+		if n := len(merged); n > 0 && r.Start <= merged[n-1].End {
+			merged[n-1].End = max(merged[n-1].End, r.End)
+			continue
+		}
+		merged = append(merged, r)
+	}
+	return merged
 }
