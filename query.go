@@ -380,22 +380,33 @@ func matchRanges(line string, words []string) []Match {
 		}
 	}
 	text := normalized.String()
-	var ranges []Match
+	// reach[i] is one past the furthest normalized byte that an occurrence
+	// starting at i covers, so repeated occurrences cost no extra memory.
+	reach := make([]int, len(text))
+	seen := make(map[string]bool, len(words))
 	for _, word := range words {
+		if word == "" || seen[word] {
+			continue
+		}
+		seen[word] = true
 		for at := 0; ; {
 			i := strings.Index(text[at:], word)
 			if i < 0 {
 				break
 			}
-			first, last := at+i, at+i+len(word)-1
-			ranges = append(ranges, Match{Start: from[first], End: to[last]})
+			first := at + i
+			reach[first] = max(reach[first], first+len(word))
 			_, size := utf8.DecodeRuneInString(text[first:])
 			at = first + size
 		}
 	}
-	sort.Slice(ranges, func(a, b int) bool { return ranges[a].Start < ranges[b].Start })
 	var merged []Match
-	for _, r := range ranges {
+	for i, end := 0, 0; i < len(text); i++ {
+		if reach[i] <= end {
+			continue
+		}
+		r := Match{Start: from[max(i, end)], End: to[reach[i]-1]}
+		end = reach[i]
 		if n := len(merged); n > 0 && r.Start <= merged[n-1].End {
 			merged[n-1].End = max(merged[n-1].End, r.End)
 			continue

@@ -242,6 +242,19 @@ func TestMatchRangesMergeOverlaps(t *testing.T) {
 	if got := matchRanges("ﾊﾟﾝとパン", []string{"パン"}); !reflect.DeepEqual(got, []Match{{0, 9}, {12, 18}}) {
 		t.Fatalf("half-width kana: %+v", got)
 	}
+	// ㍿ expands to 株式会社, so 株式 and 社 both cover the whole character.
+	if got := matchRanges("x㍿y", []string{"株式", "社"}); !reflect.DeepEqual(got, []Match{{1, 4}}) {
+		t.Fatalf("pieces of one expansion: %+v", got)
+	}
+	// Every byte starts an occurrence of every word, and the result is still
+	// one range.
+	words := make([]string, 64)
+	for i := range words {
+		words[i] = "a"
+	}
+	if got := matchRanges(strings.Repeat("a", 100000), words); !reflect.DeepEqual(got, []Match{{0, 100000}}) {
+		t.Fatalf("repeated occurrences: %+v", got)
+	}
 }
 
 func TestMirrorFind(t *testing.T) {
