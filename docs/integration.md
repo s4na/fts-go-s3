@@ -34,28 +34,25 @@ flowchart LR
 キーはアプリのページ ID から作ります。たとえば `spaces/<スペースID>/pages/<ページID>` のようにすると、次のことができます。
 
 - スペースで絞り込む：`Query.KeyPrefix`
-- 権限で絞り込む：キーのスペース ID で判断する（下記）
+- 権限で絞り込む：`FindOptions.Filter`（下記）
 - キーから DB の行を引く：結果の `Key` を分解する
 
 `Mirror` の文書 ID には、空の要素・`.`・`..` を含められません。
 
 ## 権限による絞り込み
 
-zenbun は権限を管理しません。誰がどの文書を見てよいかはアプリが判断し、検索の範囲を絞ります。
-
-権限がスペース単位なら、利用者が見てよいスペースごとに `Query.KeyPrefix` を付けて検索します。
+zenbun は権限を管理しません。誰がどの文書を見てよいかはアプリが判断し、`FindOptions.Filter` で伝えます。除いたキーは本文を読まず、`Count`・`Candidates`・`Limit` にも数えず、`Next` にもならないので、結果から見えない文書の存在は分かりません。
 
 ```go
-result, err := mirror.Find(ctx, zenbun.Query{
-    All:       [][]string{{word}},
-    KeyPrefix: "spaces/" + spaceID + "/",
-}, zenbun.FindOptions{Limit: 20})
+allowed := wiki.AllowedSpaces(user) // 検索の前に 1 度だけ取得する
+result, err := mirror.Find(ctx, query, zenbun.FindOptions{
+    Limit:  20,
+    Filter: func(key string) bool { return allowed[spaceOf(key)] },
+})
 ```
 
-`KeyPrefix` で表せない権限を、検索結果を受け取ってから除く形で扱う場合は、次の点に注意します。
-
-- 除いた分だけ、1 ページの件数が `Limit` より少なくなります。
-- `Count`・`Candidates`・`Next` には除いた文書も含まれるので、そのまま利用者に見せると、見えない文書の存在が分かります。
+- `Filter` は候補のキーごとに呼ばれます。呼ぶたびに DB へ問い合わせず、キーだけで判断できるようにしておきます。
+- 権限がスペース単位で、1 つのスペースだけを検索するなら、`Query.KeyPrefix` でも足ります。
 
 `Read` は権限を確認しません。キーを受け取ったら、呼び出す前に確認してください。
 
@@ -113,7 +110,7 @@ result, err := mirror.Find(ctx, zenbun.Query{All: [][]string{{word}}}, zenbun.Fi
 
 ## MCP のツールにする
 
-`Query` と `FindOptions` には JSON タグがあるので、ツールの引数をそのまま使えます。**`Concurrency` は JSON では指定できない**ので、LLM がストレージへの負荷を上げることはできません。検索の範囲（`KeyPrefix`）は LLM の入力で変えられるので、権限に関わる場合はアプリ側で上書きします。
+`Query` と `FindOptions` には JSON タグがあるので、ツールの引数をそのまま使えます。**`Filter` と `Concurrency` は JSON では指定できない**ので、LLM が権限を外すことはできません。アプリ側で、ツールを呼んだ利用者に合わせて設定します。
 
 ```go
 type findArgs struct {
@@ -128,7 +125,7 @@ func handleFind(ctx context.Context, user User, raw json.RawMessage) (zenbun.Fin
     if err := decoder.Decode(&args); err != nil {
         return zenbun.FindResult{}, err
     }
-    args.Query.KeyPrefix = user.SpacePrefix() // LLM の入力より後に設定する
+    args.Options.Filter = user.CanRead // LLM の入力より後に設定する
     args.Options.Concurrency = 8
     return mirror.Find(ctx, args.Query, args.Options)
 }
