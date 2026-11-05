@@ -18,7 +18,10 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-const segmentVersion = 2
+// segmentVersion is the format written by this library. Versions 1 and 2
+// remain readable and are replaced by version 3 when compacted.
+const segmentVersion = 3
+const v2SegmentVersion = 2
 const legacySegmentVersion = 1
 const footerSize = 32
 const dictionaryBlockSize = 64
@@ -47,8 +50,17 @@ type blockIndex struct {
 	Length int64  `json:"length"`
 }
 
+// documentRecord is one row of the v3 document table. Its position in key
+// order, starting at 1, is the document ID used by postings.
+type documentRecord struct {
+	Key     string `json:"key"`
+	Deleted bool   `json:"deleted,omitempty"`
+	ETag    string `json:"etag,omitempty"`
+}
+
 type segmentIndex struct {
 	DocBlockSize int          `json:"doc_block_size,omitempty"`
+	DocFirst     []string     `json:"doc_first,omitempty"`
 	Blocks       []blockIndex `json:"blocks"`
 	Bloom        []byte       `json:"bloom"`
 	BloomHash    string       `json:"bloom_hash"`
@@ -97,13 +109,17 @@ func terms(text string) []string {
 }
 
 // A segment contains a sorted document table, posting lists, dictionary blocks,
-// a sparse index and a fixed-size footer. Version 2 stores delta-encoded IDs.
+// a sparse index and a fixed-size footer. Version 2 and later store
+// delta-encoded IDs; version 3 drops the per-document term lists.
 func encodeSegment(docs map[string]indexedDocument) ([]byte, error) {
 	return encodeSegmentVersion(docs, segmentVersion)
 }
 
 func encodeSegmentVersion(docs map[string]indexedDocument, version uint32) ([]byte, error) {
-	if version != legacySegmentVersion && version != segmentVersion {
+	if version == segmentVersion {
+		return encodeSegmentV3(docs)
+	}
+	if version != legacySegmentVersion && version != v2SegmentVersion {
 		return nil, errors.New("zenbun: unsupported segment version")
 	}
 	entries := make(map[string][]byte)
@@ -131,7 +147,7 @@ func encodeSegmentVersion(docs map[string]indexedDocument, version uint32) ([]by
 		return nil, err
 	}
 	entries["a"] = list
-	if version == segmentVersion {
+	if version == v2SegmentVersion {
 		for start := 0; start < len(keys); start += documentBlockSize {
 			block, err := json.Marshal(keys[start:min(start+documentBlockSize, len(keys))])
 			if err != nil {
@@ -197,7 +213,7 @@ func encodeSegmentVersion(docs map[string]indexedDocument, version uint32) ([]by
 	}
 	sum := sha256.Sum256(bloom)
 	indexData := segmentIndex{Blocks: blocks, Bloom: bloom, BloomHash: hex.EncodeToString(sum[:])}
-	if version == segmentVersion {
+	if version == v2SegmentVersion {
 		indexData.DocBlockSize = documentBlockSize
 	}
 	index, err := json.Marshal(indexData)
@@ -218,6 +234,205 @@ func encodeSegmentVersion(docs map[string]indexedDocument, version uint32) ([]by
 	return out.Bytes(), nil
 }
 
+// encodeSegmentV3 inverts documents into postings and streams them through a
+// segmentWriter. The inversion is the caller's batch; the writer itself keeps
+// only the sparse indexes, the Bloom filter and one block of each kind.
+func encodeSegmentV3(docs map[string]indexedDocument) ([]byte, error) {
+	keys := make([]string, 0, len(docs))
+	for key := range docs {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var out bytes.Buffer
+	w := newSegmentWriter(&out, len(keys))
+	posting := make(map[string][]uint64)
+	for n, key := range keys {
+		doc := docs[key]
+		if err := w.addDocument(documentRecord{Key: key, Deleted: doc.Deleted, ETag: doc.ETag}); err != nil {
+			return nil, err
+		}
+		if !doc.Deleted {
+			for _, term := range doc.Terms {
+				posting[term] = append(posting[term], uint64(n+1))
+			}
+		}
+	}
+	names := make([]string, 0, len(posting))
+	for term := range posting {
+		names = append(names, term)
+	}
+	sort.Strings(names)
+	for _, term := range names {
+		if err := w.addPosting(term, posting[term]); err != nil {
+			return nil, err
+		}
+	}
+	if err := w.finish(); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
+// segmentWriter writes a v3 segment in one pass. Documents must be added in
+// strictly increasing key order, then postings in strictly increasing term
+// order. Each dictionary block is written right after its 64 entries, so the
+// writer never holds the whole dictionary.
+type segmentWriter struct {
+	w         io.Writer
+	offset    int64
+	documents int
+	written   int
+	docBlock  []documentRecord
+	docFirst  []string
+	lastKey   string
+	postings  bool
+	lastTerm  string
+	pending   []dictionaryEntry
+	blocks    []blockIndex
+	bloom     []byte
+	err       error
+}
+
+func newSegmentWriter(w io.Writer, documents int) *segmentWriter {
+	return &segmentWriter{w: w, documents: documents, bloom: make([]byte, max(8, documents*2))}
+}
+
+func (s *segmentWriter) write(data []byte) {
+	if s.err != nil {
+		return
+	}
+	n, err := s.w.Write(data)
+	s.offset += int64(n)
+	s.err = err
+}
+
+func (s *segmentWriter) writeEntry(name string, data []byte) {
+	if s.err != nil {
+		return
+	}
+	if len(data) == 0 || len(data) > maxMetadataSize {
+		s.err = errors.New("zenbun: segment entry exceeds size limit")
+		return
+	}
+	s.pending = append(s.pending, dictionaryEntry{Term: name, Offset: s.offset, Length: int64(len(data))})
+	s.write(data)
+	if len(s.pending) == dictionaryBlockSize {
+		s.flushDictionary()
+	}
+}
+
+func (s *segmentWriter) flushDictionary() {
+	if s.err != nil || len(s.pending) == 0 {
+		return
+	}
+	data, err := json.Marshal(s.pending)
+	if err != nil {
+		s.err = err
+		return
+	}
+	if len(data) > maxMetadataSize {
+		s.err = errors.New("zenbun: dictionary block exceeds size limit")
+		return
+	}
+	s.blocks = append(s.blocks, blockIndex{First: s.pending[0].Term, Offset: s.offset, Length: int64(len(data))})
+	s.write(data)
+	s.pending = s.pending[:0]
+}
+
+func (s *segmentWriter) flushDocuments() {
+	if s.err != nil || len(s.docBlock) == 0 {
+		return
+	}
+	data, err := json.Marshal(s.docBlock)
+	if err != nil {
+		s.err = err
+		return
+	}
+	block := (s.written - 1) / documentBlockSize
+	s.docFirst = append(s.docFirst, s.docBlock[0].Key)
+	s.writeEntry(fmt.Sprintf("d%08x", block), data)
+	s.docBlock = s.docBlock[:0]
+}
+
+func (s *segmentWriter) addDocument(record documentRecord) error {
+	if s.err != nil {
+		return s.err
+	}
+	if s.postings || s.written == s.documents || !utf8.ValidString(record.Key) || s.written > 0 && record.Key <= s.lastKey {
+		return errors.New("zenbun: documents must be unique, sorted and precede postings")
+	}
+	s.written++
+	s.lastKey = record.Key
+	bloomAdd(s.bloom, record.Key)
+	s.docBlock = append(s.docBlock, record)
+	if len(s.docBlock) == documentBlockSize {
+		s.flushDocuments()
+	}
+	return s.err
+}
+
+// addPosting writes the sorted, 1-based document IDs that contain term.
+func (s *segmentWriter) addPosting(term string, ids []uint64) error {
+	if s.err != nil {
+		return s.err
+	}
+	if !s.postings {
+		if s.written != s.documents {
+			return errors.New("zenbun: postings must follow every document")
+		}
+		s.flushDocuments()
+		s.postings = true
+	} else if term <= s.lastTerm {
+		return errors.New("zenbun: postings must be sorted by term")
+	}
+	if !utf8.ValidString(term) || len(ids) == 0 {
+		return errors.New("zenbun: invalid posting")
+	}
+	s.lastTerm = term
+	var data []byte
+	var previous uint64
+	for _, id := range ids {
+		if id <= previous || id > uint64(s.documents) {
+			return errors.New("zenbun: posting IDs must be sorted document IDs")
+		}
+		data = binary.AppendUvarint(data, id-previous)
+		previous = id
+	}
+	s.writeEntry("t"+term, data)
+	return s.err
+}
+
+func (s *segmentWriter) finish() error {
+	if s.err != nil {
+		return s.err
+	}
+	if s.documents == 0 || s.written != s.documents {
+		return errors.New("zenbun: segment document count mismatch")
+	}
+	s.flushDocuments()
+	s.flushDictionary()
+	if s.err != nil {
+		return s.err
+	}
+	sum := sha256.Sum256(s.bloom)
+	index, err := json.Marshal(segmentIndex{DocBlockSize: documentBlockSize, DocFirst: s.docFirst, Blocks: s.blocks, Bloom: s.bloom, BloomHash: hex.EncodeToString(sum[:])})
+	if err != nil {
+		return err
+	}
+	if len(index) > maxMetadataSize {
+		return errors.New("zenbun: segment index exceeds size limit")
+	}
+	indexOffset := s.offset
+	s.write(index)
+	var footer [footerSize]byte
+	copy(footer[:8], segmentMagic[:])
+	binary.BigEndian.PutUint32(footer[8:12], segmentVersion)
+	binary.BigEndian.PutUint64(footer[16:24], uint64(indexOffset))
+	binary.BigEndian.PutUint64(footer[24:32], uint64(len(index)))
+	s.write(footer[:])
+	return s.err
+}
+
 func validExtent(offset, length, limit int64) bool {
 	return offset >= 0 && length > 0 && offset <= limit && length <= limit-offset
 }
@@ -226,7 +441,7 @@ func parseFooter(footer []byte, size int64) (int64, int64, error) {
 	if len(footer) != footerSize || !bytes.Equal(footer[:8], segmentMagic[:]) {
 		return 0, 0, errors.New("zenbun: invalid segment footer")
 	}
-	if v := binary.BigEndian.Uint32(footer[8:12]); v != legacySegmentVersion && v != segmentVersion {
+	if v := binary.BigEndian.Uint32(footer[8:12]); v < legacySegmentVersion || v > segmentVersion {
 		return 0, 0, errors.New("zenbun: unsupported segment version")
 	}
 	off, length := binary.BigEndian.Uint64(footer[16:24]), binary.BigEndian.Uint64(footer[24:32])
@@ -255,12 +470,13 @@ type segmentReader struct {
 	dictCache   map[int][]dictionaryEntry
 	dictBytes   int
 	docMu       sync.Mutex
-	docBlocks   map[int][]string
+	docBlocks   map[int][]documentRecord
 	docBytes    int
 	version     uint32
 	store       Store
 	ref         segmentRef
 	blocks      []blockIndex
+	docFirst    []string
 	bloom       []byte
 	indexOffset int64
 }
@@ -290,8 +506,20 @@ func openSegment(ctx context.Context, store Store, ref segmentRef) (*segmentRead
 		return nil, errors.New("zenbun: invalid segment bloom checksum")
 	}
 	version := binary.BigEndian.Uint32(footer[8:12])
-	if version == segmentVersion && index.DocBlockSize != documentBlockSize || version == legacySegmentVersion && index.DocBlockSize != 0 {
+	if version >= v2SegmentVersion && index.DocBlockSize != documentBlockSize || version == legacySegmentVersion && index.DocBlockSize != 0 {
 		return nil, errors.New("zenbun: unsupported segment document block size")
+	}
+	if version == segmentVersion {
+		if ref.Documents < 1 || len(index.DocFirst) != (ref.Documents+documentBlockSize-1)/documentBlockSize {
+			return nil, errors.New("zenbun: invalid segment document table")
+		}
+		for i, key := range index.DocFirst {
+			if !utf8.ValidString(key) || i > 0 && index.DocFirst[i-1] >= key {
+				return nil, errors.New("zenbun: invalid segment document table")
+			}
+		}
+	} else if len(index.DocFirst) != 0 {
+		return nil, errors.New("zenbun: unexpected segment document table")
 	}
 	blocks := index.Blocks
 	for i, block := range blocks {
@@ -299,7 +527,7 @@ func openSegment(ctx context.Context, store Store, ref segmentRef) (*segmentRead
 			return nil, errors.New("zenbun: invalid dictionary block")
 		}
 	}
-	return &segmentReader{version: version, store: store, ref: ref, blocks: blocks, bloom: index.Bloom, indexOffset: offset}, nil
+	return &segmentReader{version: version, store: store, ref: ref, blocks: blocks, docFirst: index.DocFirst, bloom: index.Bloom, indexOffset: offset}, nil
 }
 
 func (s *segmentReader) lookup(ctx context.Context, term string) ([]byte, bool, error) {
