@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	zenbun "github.com/s4na/fts-go-s3"
+	zenbun "github.com/s4na/zenbun"
 )
 
 // S3Config configures an S3-compatible bucket. Credentials are static; when

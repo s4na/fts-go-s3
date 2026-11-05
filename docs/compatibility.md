@@ -28,4 +28,4 @@ CI は [VersityGW](../.github/ci/versity/Dockerfile) と [SeaweedFS](../.github/
 | 自前 S3 機能の削減 | 保守対象を小さくできる可能性 | 既存利用者のアドレス形式や再試行に影響 | 互換性を維持し、今回は削除しない |
 | FileStore | S3 なしで永続ストレージを試せる | プロセス間の条件付き書き込みや障害時の原子性を検証する必要 | 別途設計・実装を検討 |
 
-移行する Go コードでは `github.com/s4na/fts-go-s3/s3store` を import し、`zenbun.NewS3Store(zenbun.S3Config{...})` を `s3store.NewS3Store(s3store.S3Config{...})` に置き換えてください。`Store` や索引の API と保存済みデータの形式は変わりません。
+移行する Go コードでは `github.com/s4na/zenbun/s3store` を import し、`zenbun.NewS3Store(zenbun.S3Config{...})` を `s3store.NewS3Store(s3store.S3Config{...})` に置き換えてください。`Store` や索引の API と保存済みデータの形式は変わりません。

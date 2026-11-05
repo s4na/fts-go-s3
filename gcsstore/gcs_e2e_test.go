@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/s4na/fts-go-s3/storetest"
+	"github.com/s4na/zenbun/storetest"
 )
 
 func TestGCSEndToEnd(t *testing.T) {
