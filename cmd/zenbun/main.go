@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	zenbun "github.com/s4na/fts-go-s3"
-	"github.com/s4na/fts-go-s3/gcsstore"
-	"github.com/s4na/fts-go-s3/s3store"
+	zenbun "github.com/s4na/zenbun"
+	"github.com/s4na/zenbun/gcsstore"
+	"github.com/s4na/zenbun/s3store"
 )
 
 // storageConfig holds connection flags. Empty endpoint and bucket fall back to

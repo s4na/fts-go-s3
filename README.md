@@ -2,8 +2,8 @@
 
 **S3 互換ストレージや Google Cloud Storage に置いた UTF-8 テキストを、同じバケット上の索引で部分文字列検索する Go ライブラリと CLI です。**
 
-[![CI](https://github.com/s4na/fts-go-s3/actions/workflows/ci.yml/badge.svg)](https://github.com/s4na/fts-go-s3/actions/workflows/ci.yml)
-[![Storage compatibility](https://github.com/s4na/fts-go-s3/actions/workflows/e2e.yml/badge.svg)](https://github.com/s4na/fts-go-s3/actions/workflows/e2e.yml)
+[![CI](https://github.com/s4na/zenbun/actions/workflows/ci.yml/badge.svg)](https://github.com/s4na/zenbun/actions/workflows/ci.yml)
+[![Storage compatibility](https://github.com/s4na/zenbun/actions/workflows/e2e.yml/badge.svg)](https://github.com/s4na/zenbun/actions/workflows/e2e.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 - **サーバー不要**：索引もバケットに置きます。検索時は索引の必要な部分だけを Range GET で読みます。
@@ -21,8 +21,10 @@
 
 Go 1.27 以上が必要です。
 
+旧モジュール `github.com/s4na/fts-go-s3` を利用している場合は、依存関係とすべての import パスを `github.com/s4na/zenbun` に変更してください。旧パスと新パスは Go では別のモジュールとして扱われます。
+
 ```sh
-go get github.com/s4na/fts-go-s3
+go get github.com/s4na/zenbun
 ```
 
 S3 を用意しなくても、メモリストアで試せます。
@@ -35,7 +37,7 @@ import (
     "fmt"
     "log"
 
-    zenbun "github.com/s4na/fts-go-s3"
+    zenbun "github.com/s4na/zenbun"
 )
 
 func main() {
@@ -71,8 +73,8 @@ func main() {
 
 ```go
 import (
-    zenbun "github.com/s4na/fts-go-s3"
-    "github.com/s4na/fts-go-s3/s3store"
+    zenbun "github.com/s4na/zenbun"
+    "github.com/s4na/zenbun/s3store"
 )
 
 store, err := s3store.NewS3Store(s3store.S3Config{
@@ -113,7 +115,7 @@ export AWS_REGION='us-east-1'           # 省略時は us-east-1
 export AWS_ACCESS_KEY_ID='...'
 export AWS_SECRET_ACCESS_KEY='...'
 
-go install github.com/s4na/fts-go-s3/cmd/zenbun@latest
+go install github.com/s4na/zenbun/cmd/zenbun@latest
 
 zenbun sync    -source articles/ -index indexes/articles/
 zenbun search  -index indexes/articles/ '日本語'
@@ -463,8 +465,8 @@ zenbun reclaim -index indexes/articles/ -grace 24h
 | アダプター | パッケージ | 用途 |
 |---|---|---|
 | `MemoryStore` | `zenbun` | テストや試用 |
-| `S3Store` | `github.com/s4na/fts-go-s3/s3store` | Amazon S3 と S3 互換ストレージ（MinIO、Cloudflare R2、VersityGW、SeaweedFS など） |
-| `GCSStore` | `github.com/s4na/fts-go-s3/gcsstore` | Google Cloud Storage（JSON API） |
+| `S3Store` | `github.com/s4na/zenbun/s3store` | Amazon S3 と S3 互換ストレージ（MinIO、Cloudflare R2、VersityGW、SeaweedFS など） |
+| `GCSStore` | `github.com/s4na/zenbun/gcsstore` | Google Cloud Storage（JSON API） |
 
 ```go
 var store zenbun.Store
@@ -507,7 +509,7 @@ func TestMyStore(t *testing.T) {
 ```go
 import (
     "golang.org/x/oauth2/google"
-    "github.com/s4na/fts-go-s3/gcsstore"
+    "github.com/s4na/zenbun/gcsstore"
 )
 
 client, err := google.DefaultClient(ctx, "https://www.googleapis.com/auth/devstorage.read_write")
@@ -523,7 +525,7 @@ store, err := gcsstore.NewGCSStore(gcsstore.GCSConfig{Bucket: "example-bucket", 
 ## コマンドライン
 
 ```sh
-go install github.com/s4na/fts-go-s3/cmd/zenbun@latest
+go install github.com/s4na/zenbun/cmd/zenbun@latest
 ```
 
 | コマンド | 内容 |

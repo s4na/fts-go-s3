@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	zenbun "github.com/s4na/fts-go-s3"
+	zenbun "github.com/s4na/zenbun"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
