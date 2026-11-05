@@ -6,10 +6,12 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-  actions: read
-  pull-requests: write
 jobs:
   oracle:
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
