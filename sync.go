@@ -27,13 +27,16 @@ func (i *Index) Sync(ctx context.Context, source Store, sourcePrefix string) err
 	if err != nil {
 		return err
 	}
+	// Only ETags and deletion state are needed to detect changes, so term lists
+	// are not decoded. The map still grows with the number of indexed keys; see
+	// issue #65 for the key-ordered merge that removes that dependency.
 	indexed := make(map[string]indexedDocument)
 	for _, ref := range m.Segments {
 		reader, err := i.segment(ctx, ref)
 		if err != nil {
 			return err
 		}
-		docs, err := segmentDocuments(ctx, reader)
+		docs, err := segmentDocuments(ctx, reader, false)
 		if err != nil {
 			return err
 		}
