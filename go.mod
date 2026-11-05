@@ -1,4 +1,4 @@
-module github.com/s4na/fts-go-s3
+module github.com/s4na/zenbun
 
 go 1.27.0
 

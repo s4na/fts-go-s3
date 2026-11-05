@@ -13,8 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	zenbun "github.com/s4na/fts-go-s3"
-	"github.com/s4na/fts-go-s3/s3store"
+	zenbun "github.com/s4na/zenbun"
+	"github.com/s4na/zenbun/s3store"
 	"golang.org/x/text/unicode/norm"
 )
 

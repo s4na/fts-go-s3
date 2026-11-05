@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"github.com/s4na/fts-go-s3/gcsstore"
-	"github.com/s4na/fts-go-s3/s3store"
+	"github.com/s4na/zenbun/gcsstore"
+	"github.com/s4na/zenbun/s3store"
 )
 
 func TestNewStoreSelectsAdapter(t *testing.T) {

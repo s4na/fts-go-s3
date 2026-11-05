@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	zenbun "github.com/s4na/fts-go-s3"
+	zenbun "github.com/s4na/zenbun"
 )
 
 // Run exercises store with conditional writes, ranges, listing, an index and
