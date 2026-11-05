@@ -21,6 +21,22 @@ elif inverse >= 1:
 else:
     print(f'- 割合: 全文走査の {fraction * 100:.2f}%（全文走査より多い）')
 print('\n文書のサイズは、索引に渡した UTF-8 テキストのバイト数の合計です。'
-      '検索の読み込み量はメモリストアの GET 応答データで、索引のマニフェスト等を含みます。'
+      '検索の読み込み量はストアの GET 応答データで、索引のマニフェスト等を含みます。'
       'HTTP ヘッダーや、候補を確定するための元文書の読み取りは含みません。'
       '同じ Index を全クエリで使うため、最初のクエリ以降は索引の目次キャッシュを利用します。')
+
+operations = metrics.get('operations') or {}
+if operations:
+    budget = metrics.get('memory_budget_bytes') or 0
+    print('\n## 操作ごとのピークヒープ\n')
+    if budget:
+        print(f'メモリ予算: {budget / 2**20:,.0f} MiB（ピーク増分で判定）\n')
+    print('| 操作 | 秒 | ピーク増分 (MiB) | 割り当て累計 (MiB) | GET | 受信 (MiB) | PUT |')
+    print('|---|---:|---:|---:|---:|---:|---:|')
+    for name, op in sorted(operations.items()):
+        mark = ' ⚠️' if budget and op['peak_heap_delta_bytes'] > budget else ''
+        print(f"| {name}{mark} | {op['seconds']:.2f} | {op['peak_heap_delta_bytes'] / 2**20:,.1f} | "
+              f"{op['alloc_bytes'] / 2**20:,.1f} | {op['gets']:,} | {op['received_bytes'] / 2**20:,.1f} | {op['puts']:,} |")
+    print('\nピーク増分は、操作開始時に GC した後のヒープ使用量からの増加分の最大値です（1 ms 間隔の標本、未回収のゴミを含む）。'
+          '各操作は新しい Index を開くため、前の操作のキャッシュは含みません。'
+          'build は Apply に渡すバッチ分の本文を含みます。')
