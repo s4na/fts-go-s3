@@ -121,9 +121,10 @@ const (
 
 // FindOptions bounds what Find reads and returns. Zero values select the
 // defaults: snippets, 20 documents, 3 snippets per document and 16 KiB of
-// snippet text. Limit applies to every Mode, including FindCount. Context is the number of lines around each matching line.
-// After continues from a previous result's Next. Matches adds each snippet's
-// matching ranges, such as for highlighting.
+// snippet text. Limit applies to every Mode, including FindCount. Context is
+// the number of lines around each matching line. After continues from a
+// previous result's Next. Matches adds each snippet's matching ranges, such as
+// for highlighting.
 //
 // Concurrency is the number of bodies read at once, 4 by default and at most
 // 64. Results stay in key order; once Find stops, it cancels reads ahead of
