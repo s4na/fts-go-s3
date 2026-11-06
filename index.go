@@ -19,6 +19,11 @@ import (
 const manifestVersion = 1
 
 // Index stores immutable segments under a prefix, separate from source documents.
+//
+// An Index is safe for concurrent use by multiple goroutines, and several
+// Index values, in one or many processes, may share a prefix: writers publish
+// through a conditional manifest write and see ErrConflict when they lose a
+// race. Use RetryConflict to retry a whole operation after a conflict.
 type Index struct {
 	store   Store
 	prefix  string

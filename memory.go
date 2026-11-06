@@ -24,6 +24,8 @@ type memoryObject struct {
 	time time.Time
 }
 
+// Get implements Store. It returns ErrNotFound for an absent key and
+// ErrInvalidRange for an unsatisfiable range.
 func (s *MemoryStore) Get(ctx context.Context, key string, r *ByteRange) (Object, error) {
 	if err := ctx.Err(); err != nil {
 		return Object{}, err
@@ -47,6 +49,8 @@ func (s *MemoryStore) Get(ctx context.Context, key string, r *ByteRange) (Object
 	return Object{Data: append([]byte(nil), data...), ETag: obj.etag}, nil
 }
 
+// Put implements Store. It returns ErrConflict if the precondition in options
+// does not hold, and an error if both conditions are set.
 func (s *MemoryStore) Put(ctx context.Context, key string, data []byte, options PutOptions) (string, error) {
 	if options.IfNoneMatch && options.IfMatch != "" {
 		return "", errors.New("put: mutually exclusive conditions")
@@ -87,6 +91,7 @@ func (s *MemoryStore) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+// List implements Store. The result is sorted by key.
 func (s *MemoryStore) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

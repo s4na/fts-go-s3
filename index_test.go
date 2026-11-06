@@ -23,18 +23,19 @@ func assertOracle(t *testing.T, index *Index, docs map[string]string, queries []
 	for _, query := range queries {
 		keys, err := index.Search(context.Background(), query)
 		if err != nil {
-			t.Fatalf("search %q: %v", query, err)
+			t.Errorf("Search(%q) error = %v", query, err)
+			continue
 		}
 		got := make(map[string]bool)
 		for _, key := range keys {
 			got[key] = true
 			if _, exists := docs[key]; !exists {
-				t.Fatalf("deleted key %q returned", key)
+				t.Errorf("Search(%q) returned deleted key %q", query, key)
 			}
 		}
 		for key, text := range docs {
 			if strings.Contains(normalized(text), normalized(query)) && !got[key] {
-				t.Fatalf("false negative query=%q key=%q text=%q", query, key, text)
+				t.Errorf("Search(%q) missed key %q with text %q", query, key, text)
 			}
 		}
 	}

@@ -15,7 +15,9 @@ const syncBatchSize = 1000
 // It is intended for an index dedicated to one source prefix; source listing
 // and reads must be stable or externally coordinated during synchronization.
 // Large changes are published in batches: if an error occurs, prior batches
-// remain visible and a subsequent Sync can resume. Each batch uses manifest CAS.
+// remain visible and a subsequent Sync can resume. Each batch uses manifest CAS,
+// so Sync returns an error matching ErrConflict if another writer publishes
+// first; reload and call it again, for example through RetryConflict.
 func (i *Index) Sync(ctx context.Context, source Store, sourcePrefix string) error {
 	if source == nil || sourcePrefix == "" {
 		return errors.New("zenbun: source and source prefix are required")
