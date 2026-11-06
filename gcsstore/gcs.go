@@ -101,6 +101,9 @@ func (s *GCSStore) objectURL(upload bool, key string, query url.Values) string {
 	return base
 }
 
+// maxErrorBody bounds how much of an HTTP error response is read.
+const maxErrorBody = 64 << 10
+
 func (s *GCSStore) request(ctx context.Context, method, target string, headers http.Header, data []byte, retry bool) (int, http.Header, []byte, error) {
 	attempts := 1
 	if retry {
@@ -137,7 +140,12 @@ func (s *GCSStore) request(ctx context.Context, method, target string, headers h
 			}
 			return 0, nil, nil, fmt.Errorf("gcs: request: %w", err)
 		}
-		body, readErr := io.ReadAll(resp.Body)
+		reader := io.Reader(resp.Body)
+		if resp.StatusCode >= 400 {
+			// Error bodies are only inspected for an error reason; keep them bounded.
+			reader = io.LimitReader(resp.Body, maxErrorBody)
+		}
+		body, readErr := io.ReadAll(reader)
 		closeErr := resp.Body.Close()
 		if readErr != nil {
 			return 0, nil, nil, fmt.Errorf("gcs: read response: %w", readErr)
@@ -154,26 +162,83 @@ func (s *GCSStore) request(ctx context.Context, method, target string, headers h
 }
 
 // GCSError reports a Cloud Storage HTTP error not mapped to a Store sentinel.
+// Code is "BucketNotFound" for a 404 identified as a missing bucket; otherwise
+// it is the first error reason of the JSON body (for example "forbidden"), or
+// empty when the response carried none.
 type GCSError struct {
 	Operation  string
 	StatusCode int
+	Code       string
 }
 
 func (e *GCSError) Error() string {
+	if e.Code != "" {
+		return fmt.Sprintf("gcs %s: HTTP %d (%s)", e.Operation, e.StatusCode, e.Code)
+	}
 	return fmt.Sprintf("gcs %s: HTTP %d", e.Operation, e.StatusCode)
 }
 
-func gcsError(operation string, status int) error {
+// gcsErrorInfo parses the JSON error body and reports the first reason and
+// whether the error says the bucket (rather than an object) is missing.
+//
+// GCS answers a missing object and a missing bucket with the same 404 and the
+// same reason "notFound"; only the message differs ("No such object: b/o" vs
+// "The specified bucket does not exist."). The message is therefore the
+// discriminator, matched case-insensitively on "bucket does not exist"; the
+// reasons "bucketNotFound" / "NoSuchBucket" (XML-API style, used by some
+// emulators) are accepted too. Anything unrecognized is not a missing bucket.
+func gcsErrorInfo(body []byte) (reason string, bucketMissing bool) {
+	var e struct {
+		Error struct {
+			Message string `json:"message"`
+			Errors  []struct {
+				Message string `json:"message"`
+				Reason  string `json:"reason"`
+			} `json:"errors"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &e) != nil {
+		return "", false
+	}
+	messages := []string{e.Error.Message}
+	for _, item := range e.Error.Errors {
+		if reason == "" {
+			reason = item.Reason
+		}
+		messages = append(messages, item.Message)
+		if item.Reason == "bucketNotFound" || item.Reason == "NoSuchBucket" {
+			bucketMissing = true
+		}
+	}
+	for _, m := range messages {
+		if strings.Contains(strings.ToLower(m), "bucket does not exist") {
+			bucketMissing = true
+		}
+	}
+	return reason, bucketMissing
+}
+
+func gcsBucketMissing(body []byte) bool {
+	_, missing := gcsErrorInfo(body)
+	return missing
+}
+
+func gcsError(operation string, status int, body []byte) error {
+	reason, bucketMissing := gcsErrorInfo(body)
+	if bucketMissing {
+		reason = "BucketNotFound"
+	}
 	switch status {
 	case http.StatusNotFound:
-		return fmt.Errorf("gcs %s: %w", operation, zenbun.ErrNotFound)
+		if !bucketMissing {
+			return fmt.Errorf("gcs %s: %w", operation, zenbun.ErrNotFound)
+		}
 	case http.StatusPreconditionFailed, http.StatusConflict:
 		return fmt.Errorf("gcs %s: %w", operation, zenbun.ErrConflict)
 	case http.StatusRequestedRangeNotSatisfiable:
 		return fmt.Errorf("gcs %s: %w", operation, zenbun.ErrInvalidRange)
-	default:
-		return &GCSError{Operation: operation, StatusCode: status}
 	}
+	return &GCSError{Operation: operation, StatusCode: status, Code: reason}
 }
 
 func (s *GCSStore) Get(ctx context.Context, key string, r *zenbun.ByteRange) (zenbun.Object, error) {
@@ -190,7 +255,7 @@ func (s *GCSStore) Get(ctx context.Context, key string, r *zenbun.ByteRange) (ze
 		return zenbun.Object{}, err
 	}
 	if r == nil && status != http.StatusOK || r != nil && status != http.StatusPartialContent {
-		return zenbun.Object{}, gcsError("get", status)
+		return zenbun.Object{}, gcsError("get", status, body)
 	}
 	if r != nil && int64(len(body)) != r.End-r.Start {
 		return zenbun.Object{}, zenbun.ErrInvalidRange
@@ -229,11 +294,11 @@ func (s *GCSStore) Put(ctx context.Context, key string, data []byte, options zen
 	if err != nil {
 		return "", err
 	}
-	if status == http.StatusNotFound && options.IfMatch != "" {
+	if status == http.StatusNotFound && options.IfMatch != "" && !gcsBucketMissing(body) {
 		return "", fmt.Errorf("gcs put: %w", zenbun.ErrConflict)
 	}
 	if status != http.StatusOK {
-		return "", gcsError("put", status)
+		return "", gcsError("put", status, body)
 	}
 	var object objectResource
 	if err := json.Unmarshal(body, &object); err != nil {
@@ -246,12 +311,12 @@ func (s *GCSStore) Put(ctx context.Context, key string, data []byte, options zen
 }
 
 func (s *GCSStore) Delete(ctx context.Context, key string) error {
-	status, _, _, err := s.request(ctx, http.MethodDelete, s.objectURL(false, key, nil), nil, nil, false)
+	status, _, body, err := s.request(ctx, http.MethodDelete, s.objectURL(false, key, nil), nil, nil, false)
 	if err != nil {
 		return err
 	}
-	if status != http.StatusNoContent && status != http.StatusOK && status != http.StatusNotFound {
-		return gcsError("delete", status)
+	if status != http.StatusNoContent && status != http.StatusOK && !(status == http.StatusNotFound && !gcsBucketMissing(body)) {
+		return gcsError("delete", status, body)
 	}
 	return nil
 }
@@ -269,7 +334,7 @@ func (s *GCSStore) List(ctx context.Context, prefix string) ([]zenbun.ObjectInfo
 			return nil, err
 		}
 		if status != http.StatusOK {
-			return nil, gcsError("list", status)
+			return nil, gcsError("list", status, body)
 		}
 		var page struct {
 			Items []objectResource `json:"items"`

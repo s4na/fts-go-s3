@@ -84,3 +84,46 @@ func TestGCSRequiresCredentials(t *testing.T) {
 		t.Fatalf("environment token: %+v %v", store, err)
 	}
 }
+
+func TestGCSMissingBucketIsNotObjectNotFound(t *testing.T) {
+	const noBucket = `{"error":{"code":404,"message":"The specified bucket does not exist.","errors":[{"message":"The specified bucket does not exist.","domain":"global","reason":"notFound"}]}}`
+	const noObject = `{"error":{"code":404,"message":"No such object: bucket/k","errors":[{"message":"No such object: bucket/k","domain":"global","reason":"notFound"}]}}`
+	body := noBucket
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	})
+	store, err := NewGCSStore(GCSConfig{Bucket: "bucket", HTTPClient: &http.Client{Transport: transport}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	check := func(name string, err error) {
+		t.Helper()
+		var gerr *GCSError
+		if errors.Is(err, zenbun.ErrNotFound) || errors.Is(err, zenbun.ErrConflict) || !errors.As(err, &gerr) || gerr.Code != "BucketNotFound" || !strings.Contains(err.Error(), "BucketNotFound") {
+			t.Errorf("%s: want GCSError BucketNotFound, got %v", name, err)
+		}
+	}
+	_, err = store.Get(ctx, "k", nil)
+	check("get", err)
+	_, err = store.Put(ctx, "k", nil, zenbun.PutOptions{IfMatch: "7"})
+	check("put if-match", err)
+	_, err = store.List(ctx, "")
+	check("list", err)
+	check("delete", store.Delete(ctx, "k"))
+
+	body = noObject
+	if _, err := store.Get(ctx, "k", nil); !errors.Is(err, zenbun.ErrNotFound) {
+		t.Errorf("missing object: %v", err)
+	}
+	if _, err := store.Put(ctx, "k", nil, zenbun.PutOptions{IfMatch: "7"}); !errors.Is(err, zenbun.ErrConflict) {
+		t.Errorf("missing object put: %v", err)
+	}
+	if err := store.Delete(ctx, "k"); err != nil {
+		t.Errorf("missing object delete: %v", err)
+	}
+	body = "" // unidentifiable 404 keeps the previous behavior
+	if _, err := store.Get(ctx, "k", nil); !errors.Is(err, zenbun.ErrNotFound) {
+		t.Errorf("empty 404: %v", err)
+	}
+}
