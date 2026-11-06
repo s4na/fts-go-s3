@@ -114,13 +114,14 @@ const (
 	FindSnippets FindMode = "snippets"
 	// FindKeys returns keys only.
 	FindKeys FindMode = "keys"
-	// FindCount returns only Count.
+	// FindCount returns only Count. Count stops at Limit like the other modes,
+	// so it is not a total; raise Limit or page with After/Next and sum Count.
 	FindCount FindMode = "count"
 )
 
 // FindOptions bounds what Find reads and returns. Zero values select the
 // defaults: snippets, 20 documents, 3 snippets per document and 16 KiB of
-// snippet text. Context is the number of lines around each matching line.
+// snippet text. Limit applies to every Mode, including FindCount. Context is the number of lines around each matching line.
 // After continues from a previous result's Next. Matches adds each snippet's
 // matching ranges, such as for highlighting.
 //
@@ -168,7 +169,8 @@ type FoundDocument struct {
 // FindResult reports verified matches in key order. Candidates is the number
 // of index candidates after After, an upper bound on remaining matches. When
 // Truncated is true, more candidates remain or snippet text was cut; pass Next
-// as After to continue.
+// as After to continue. Count is the number of verified matches in this result,
+// at most Limit; when Truncated is true it is not the total.
 type FindResult struct {
 	Count      int             `json:"count"`
 	Candidates int             `json:"candidates"`
