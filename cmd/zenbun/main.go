@@ -54,11 +54,53 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// output receives help text; tests replace it.
+var output io.Writer = os.Stdout
+
+const usageText = `usage: zenbun <command> [options] [argument]
+
+commands:
+  sync              index documents under the source prefix
+  search <query>    print keys of documents containing the query
+  find <json>       search with a JSON query and print snippets
+  read <key>        print lines of one document
+  compact           merge index segments
+  reclaim           delete unreferenced index objects after the grace period
+  help              show this help
+
+Options must come before the argument: zenbun search -index x query
+Run "zenbun <command> -h" for the options of a command.
+`
+
+// argCounts lists the known commands with the positional arguments each takes,
+// and a description of that argument used in error messages.
+var argCounts = map[string]struct {
+	count int
+	what  string
+}{
+	"sync":    {0, ""},
+	"search":  {1, "one query"},
+	"find":    {1, "one JSON query"},
+	"read":    {1, "one key"},
+	"compact": {0, ""},
+	"reclaim": {0, ""},
+}
+
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: zenbun {sync|search|find|read|compact|reclaim} [options]")
+		_, err := fmt.Fprint(output, usageText)
+		return err
 	}
 	command := args[0]
+	switch command {
+	case "help", "-h", "--help", "-help":
+		_, err := fmt.Fprint(output, usageText)
+		return err
+	}
+	spec, known := argCounts[command]
+	if !known {
+		return fmt.Errorf("unknown command %q (run \"zenbun help\" for usage)", command)
+	}
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	var config storageConfig
 	flags.StringVar(&config.kind, "storage", firstNonEmpty(os.Getenv("ZENBUN_STORAGE"), "s3"), "storage adapter: s3 or gcs")
@@ -83,8 +125,28 @@ func run(args []string) error {
 	var readOptions zenbun.ReadOptions
 	flags.IntVar(&readOptions.Start, "start", 1, "read: first line, from 1")
 	flags.IntVar(&readOptions.End, "end", 0, "read: last line (default the end of the document)")
+	flags.SetOutput(io.Discard)
 	if err := flags.Parse(args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			if _, err := fmt.Fprintf(output, "usage: zenbun %s [options]%s\n\noptions:\n", command, argSuffix(spec.what)); err != nil {
+				return err
+			}
+			flags.SetOutput(output)
+			flags.PrintDefaults()
+			return nil
+		}
 		return err
+	}
+	if flags.NArg() != spec.count {
+		for _, arg := range flags.Args() {
+			if strings.HasPrefix(arg, "-") {
+				return fmt.Errorf("%s: options must come before the argument (got %q after it)", command, arg)
+			}
+		}
+		if spec.count == 0 {
+			return fmt.Errorf("%s takes no arguments", command)
+		}
+		return fmt.Errorf("%s requires %s", command, spec.what)
 	}
 	store, err := newStore(config)
 	if err != nil {
@@ -97,14 +159,8 @@ func run(args []string) error {
 	ctx := context.Background()
 	switch command {
 	case "sync":
-		if flags.NArg() != 0 {
-			return errors.New("sync takes no arguments")
-		}
 		return zenbun.RetryConflict(ctx, 3, func(ctx context.Context) error { return index.Sync(ctx, store, *source) })
 	case "search":
-		if flags.NArg() != 1 {
-			return errors.New("search requires one query")
-		}
 		keys, err := index.Search(ctx, flags.Arg(0))
 		if err != nil {
 			return err
@@ -114,9 +170,6 @@ func run(args []string) error {
 		}
 		return nil
 	case "find":
-		if flags.NArg() != 1 {
-			return errors.New("find requires one JSON query")
-		}
 		query, err := parseQuery(flags.Arg(0))
 		if err != nil {
 			return err
@@ -129,9 +182,6 @@ func run(args []string) error {
 		encoder.SetEscapeHTML(false)
 		return encoder.Encode(result)
 	case "read":
-		if flags.NArg() != 1 {
-			return errors.New("read requires one key")
-		}
 		readOptions.MaxBytes = findOptions.MaxBytes
 		result, err := index.Read(ctx, store, flags.Arg(0), readOptions)
 		if err != nil {
@@ -141,9 +191,6 @@ func run(args []string) error {
 		encoder.SetEscapeHTML(false)
 		return encoder.Encode(result)
 	case "compact":
-		if flags.NArg() != 0 {
-			return errors.New("compact takes no arguments")
-		}
 		for {
 			var changed bool
 			err := zenbun.RetryConflict(ctx, 3, func(ctx context.Context) error {
@@ -156,9 +203,6 @@ func run(args []string) error {
 			}
 		}
 	case "reclaim":
-		if flags.NArg() != 0 {
-			return errors.New("reclaim takes no arguments")
-		}
 		var count int
 		err := zenbun.RetryConflict(ctx, 3, func(ctx context.Context) error {
 			var err error
@@ -172,6 +216,13 @@ func run(args []string) error {
 	default:
 		return fmt.Errorf("unknown command %q", command)
 	}
+}
+
+func argSuffix(what string) string {
+	if what == "" {
+		return ""
+	}
+	return " <" + strings.TrimPrefix(strings.TrimPrefix(what, "one JSON "), "one ") + ">"
 }
 
 // parseQuery rejects unknown fields so a misspelled condition is not ignored.
