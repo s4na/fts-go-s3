@@ -33,7 +33,7 @@ func TestS3AddressingSigningAndRetries(t *testing.T) {
 		}
 		return &http.Response{StatusCode: status, Header: http.Header{"Etag": {"\"etag\""}}, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
 	})
-	store, err := NewS3Store(S3Config{Endpoint: "https://example.test/base", Bucket: "bucket", AccessKey: "access", SecretKey: "secret", SessionToken: "session", VirtualHost: true, HTTPClient: &http.Client{Transport: transport}})
+	store, err := New(Config{Endpoint: "https://example.test/base", Bucket: "bucket", AccessKey: "access", SecretKey: "secret", SessionToken: "session", VirtualHost: true, HTTPClient: &http.Client{Transport: transport}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestS3AddressingSigningAndRetries(t *testing.T) {
 	}
 	attempts = 0
 	_, err = store.Put(context.Background(), "a +/日", []byte("x"), zenbun.PutOptions{IfNoneMatch: true})
-	var response *S3Error
+	var response *Error
 	if !errors.As(err, &response) || response.StatusCode != http.StatusServiceUnavailable || attempts != 1 {
 		t.Fatalf("conditional put: %v attempts=%d", err, attempts)
 	}
@@ -56,14 +56,14 @@ func TestS3MissingBucketIsNotObjectNotFound(t *testing.T) {
 	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
 	})
-	store, err := NewS3Store(S3Config{Endpoint: "https://example.test", Bucket: "bucket", AccessKey: "a", SecretKey: "s", HTTPClient: &http.Client{Transport: transport}})
+	store, err := New(Config{Endpoint: "https://example.test", Bucket: "bucket", AccessKey: "a", SecretKey: "s", HTTPClient: &http.Client{Transport: transport}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
 	check := func(name string, err error, wantMissingObject bool) {
 		t.Helper()
-		var s3err *S3Error
+		var s3err *Error
 		if wantMissingObject {
 			if !errors.Is(err, zenbun.ErrNotFound) && !errors.Is(err, zenbun.ErrConflict) && err != nil {
 				t.Errorf("%s: %v", name, err)
@@ -71,7 +71,7 @@ func TestS3MissingBucketIsNotObjectNotFound(t *testing.T) {
 			return
 		}
 		if errors.Is(err, zenbun.ErrNotFound) || errors.Is(err, zenbun.ErrConflict) || !errors.As(err, &s3err) || s3err.Code != "NoSuchBucket" || !strings.Contains(err.Error(), "NoSuchBucket") {
-			t.Errorf("%s: want S3Error NoSuchBucket, got %v", name, err)
+			t.Errorf("%s: want Error NoSuchBucket, got %v", name, err)
 		}
 	}
 	_, err = store.Get(ctx, "k", nil)

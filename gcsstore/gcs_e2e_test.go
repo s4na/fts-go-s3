@@ -19,7 +19,7 @@ func TestGCSEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	client := &http.Client{Timeout: 30 * time.Second}
-	store, err := NewGCSStore(GCSConfig{Endpoint: endpoint, Bucket: "zenbun-test", HTTPClient: client})
+	store, err := New(Config{Endpoint: endpoint, Bucket: "zenbun-test", HTTPClient: client})
 	if err != nil {
 		t.Fatal(err)
 	}

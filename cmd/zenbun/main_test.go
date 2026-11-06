@@ -19,11 +19,11 @@ func TestNewStoreSelectsAdapter(t *testing.T) {
 	t.Setenv("GCS_BUCKET", "gcs-bucket")
 	t.Setenv("GCS_ENDPOINT", "")
 	store, err := newStore(storageConfig{kind: "s3"})
-	if _, ok := store.(*s3store.S3Store); err != nil || !ok {
+	if _, ok := store.(*s3store.Store); err != nil || !ok {
 		t.Fatalf("s3: %T %v", store, err)
 	}
 	store, err = newStore(storageConfig{kind: "gcs"})
-	if _, ok := store.(*gcsstore.GCSStore); err != nil || !ok {
+	if _, ok := store.(*gcsstore.Store); err != nil || !ok {
 		t.Fatalf("gcs: %T %v", store, err)
 	}
 	if _, err := newStore(storageConfig{kind: "gcs", region: "us-east-1"}); err == nil {

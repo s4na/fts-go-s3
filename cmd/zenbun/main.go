@@ -26,7 +26,7 @@ type storageConfig struct {
 func newStore(config storageConfig) (zenbun.Store, error) {
 	switch config.kind {
 	case "s3":
-		return s3store.NewS3Store(s3store.S3Config{
+		return s3store.New(s3store.Config{
 			Endpoint:    firstNonEmpty(config.endpoint, os.Getenv("S3_ENDPOINT")),
 			Bucket:      firstNonEmpty(config.bucket, os.Getenv("S3_BUCKET")),
 			Region:      firstNonEmpty(config.region, os.Getenv("AWS_REGION")),
@@ -34,9 +34,9 @@ func newStore(config storageConfig) (zenbun.Store, error) {
 		})
 	case "gcs":
 		if config.region != "" || config.virtualHost {
-			return nil, fmt.Errorf("-region and -virtual-host apply only to s3")
+			return nil, errors.New("-region and -virtual-host apply only to s3")
 		}
-		return gcsstore.NewGCSStore(gcsstore.GCSConfig{
+		return gcsstore.New(gcsstore.Config{
 			Endpoint: firstNonEmpty(config.endpoint, os.Getenv("GCS_ENDPOINT")),
 			Bucket:   firstNonEmpty(config.bucket, os.Getenv("GCS_BUCKET")),
 		})
@@ -235,7 +235,7 @@ func parseQuery(text string) (zenbun.Query, error) {
 	}
 	// More misses a stray closing bracket, so require the end of input instead.
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return zenbun.Query{}, fmt.Errorf("invalid query JSON: trailing data")
+		return zenbun.Query{}, errors.New("invalid query JSON: trailing data")
 	}
 	return query, nil
 }

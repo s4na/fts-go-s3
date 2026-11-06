@@ -22,10 +22,10 @@ CI は [VersityGW](../.github/ci/versity/Dockerfile) と [SeaweedFS](../.github/
 
 | 案 | 効果 | 互換性と実装量 | 判断 |
 |---|---|---|---|
-| S3 クライアントをサブパッケージに分離 | コアから HTTP・XML・署名の直接依存を除く | `NewS3Store` と `S3Config` の import 変更が必要。索引形式は変えない | 採用 |
+| S3 クライアントをサブパッケージに分離 | コアから HTTP・XML・署名の直接依存を除く | `NewS3Store` と `S3Config` の import 変更が必要（現在の名前は `s3store.New` と `s3store.Config`）。索引形式は変えない | 採用 |
 | List と LastModified を任意化 | 機能を絞ったストレージも利用しやすい | 回収・同期の設計と保存形式の変更が必要。未参照オブジェクトの回収にも課題 | 保存形式を検討する #33 と合わせて今後検討 |
 | SDK アダプター | IAM ロールなど既存 SDK の認証を利用できる | コアに依存を追加しない別モジュールなどが必要 | 必要な SDK と運用条件が決まってから検討 |
 | 自前 S3 機能の削減 | 保守対象を小さくできる可能性 | 既存利用者のアドレス形式や再試行に影響 | 互換性を維持し、今回は削除しない |
 | FileStore | S3 なしで永続ストレージを試せる | プロセス間の条件付き書き込みや障害時の原子性を検証する必要 | 別途設計・実装を検討 |
 
-移行する Go コードでは `github.com/s4na/zenbun/s3store` を import し、`zenbun.NewS3Store(zenbun.S3Config{...})` を `s3store.NewS3Store(s3store.S3Config{...})` に置き換えてください。`Store` や索引の API と保存済みデータの形式は変わりません。
+移行する Go コードでは `github.com/s4na/zenbun/s3store` を import し、`zenbun.NewS3Store(zenbun.S3Config{...})` を `s3store.New(s3store.Config{...})` に置き換えてください。`Store` や索引の API と保存済みデータの形式は変わりません。
