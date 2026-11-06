@@ -69,7 +69,7 @@ func New(config Config) (*Store, error) {
 	return &Store{config: config, endpoint: endpoint, client: client}, nil
 }
 
-func escapeS3(s string, slash bool) string {
+func escape(s string, slash bool) string {
 	const digits = "0123456789ABCDEF"
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
@@ -109,7 +109,7 @@ func (s *Store) request(ctx context.Context, method, key string, query url.Value
 	}
 	path += "/" + key
 	u.Path = path
-	u.RawPath = escapeS3(path, true)
+	u.RawPath = escape(path, true)
 	u.RawQuery = strings.ReplaceAll(query.Encode(), "+", "%20")
 	attempts := 1
 	if retry {
@@ -218,8 +218,8 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("s3 %s: HTTP %d", e.Operation, e.StatusCode)
 }
 
-// s3ErrorCode extracts <Code> from an S3 XML error body, or "" if unparsable.
-func s3ErrorCode(body []byte) string {
+// errorCode extracts <Code> from an S3 XML error body, or "" if unparsable.
+func errorCode(body []byte) string {
 	var e struct {
 		Code string `xml:"Code"`
 	}
@@ -233,27 +233,28 @@ func s3ErrorCode(body []byte) string {
 // absent. Only a missing-bucket style code is rejected: a 404 without a
 // recognizable code (for example from a compatible server that sends no body)
 // is treated as a missing object.
-func s3ObjectMissing(body []byte) bool {
-	code := s3ErrorCode(body)
+func objectMissing(body []byte) bool {
+	code := errorCode(body)
 	return code == "" || code == "NoSuchKey"
 }
 
-func s3Error(operation string, status int, body []byte) error {
+func responseError(operation string, status int, body []byte) error {
 	switch status {
 	case http.StatusNotFound:
-		if s3ObjectMissing(body) {
+		if objectMissing(body) {
 			return fmt.Errorf("s3 %s: %w", operation, zenbun.ErrNotFound)
 		}
-		return &Error{Operation: operation, StatusCode: status, Code: s3ErrorCode(body)}
+		return &Error{Operation: operation, StatusCode: status, Code: errorCode(body)}
 	case http.StatusPreconditionFailed, http.StatusConflict:
 		return fmt.Errorf("s3 %s: %w", operation, zenbun.ErrConflict)
 	case http.StatusRequestedRangeNotSatisfiable:
 		return fmt.Errorf("s3 %s: %w", operation, zenbun.ErrInvalidRange)
 	default:
-		return &Error{Operation: operation, StatusCode: status, Code: s3ErrorCode(body)}
+		return &Error{Operation: operation, StatusCode: status, Code: errorCode(body)}
 	}
 }
 
+// Get implements zenbun.Store.
 func (s *Store) Get(ctx context.Context, key string, r *zenbun.ByteRange) (zenbun.Object, error) {
 	headers := make(http.Header)
 	if r != nil {
@@ -267,7 +268,7 @@ func (s *Store) Get(ctx context.Context, key string, r *zenbun.ByteRange) (zenbu
 		return zenbun.Object{}, err
 	}
 	if r == nil && status != http.StatusOK || r != nil && status != http.StatusPartialContent {
-		return zenbun.Object{}, s3Error("get", status, body)
+		return zenbun.Object{}, responseError("get", status, body)
 	}
 	if r != nil && int64(len(body)) != r.End-r.Start {
 		return zenbun.Object{}, zenbun.ErrInvalidRange
@@ -275,9 +276,10 @@ func (s *Store) Get(ctx context.Context, key string, r *zenbun.ByteRange) (zenbu
 	return zenbun.Object{Data: body, ETag: header.Get("ETag")}, nil
 }
 
+// Put implements zenbun.Store.
 func (s *Store) Put(ctx context.Context, key string, data []byte, options zenbun.PutOptions) (string, error) {
 	if options.IfNoneMatch && options.IfMatch != "" {
-		return "", errors.New("put: mutually exclusive conditions")
+		return "", errors.New("s3 put: mutually exclusive conditions")
 	}
 	headers := make(http.Header)
 	if options.IfNoneMatch {
@@ -290,11 +292,11 @@ func (s *Store) Put(ctx context.Context, key string, data []byte, options zenbun
 	if err != nil {
 		return "", err
 	}
-	if status == http.StatusNotFound && options.IfMatch != "" && s3ObjectMissing(body) {
+	if status == http.StatusNotFound && options.IfMatch != "" && objectMissing(body) {
 		return "", fmt.Errorf("s3 put: %w", zenbun.ErrConflict)
 	}
 	if status != http.StatusOK {
-		return "", s3Error("put", status, body)
+		return "", responseError("put", status, body)
 	}
 	etag := header.Get("ETag")
 	if etag == "" {
@@ -303,6 +305,7 @@ func (s *Store) Put(ctx context.Context, key string, data []byte, options zenbun
 	return etag, nil
 }
 
+// Delete implements zenbun.Store.
 func (s *Store) Delete(ctx context.Context, key string) error {
 	status, _, body, err := s.request(ctx, http.MethodDelete, key, nil, nil, nil, false)
 	if err != nil {
@@ -311,13 +314,14 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 	switch {
 	case status == http.StatusNoContent, status == http.StatusOK:
 		return nil
-	case status == http.StatusNotFound && s3ObjectMissing(body):
+	case status == http.StatusNotFound && objectMissing(body):
 		return nil
 	default:
-		return s3Error("delete", status, body)
+		return responseError("delete", status, body)
 	}
 }
 
+// List implements zenbun.Store.
 func (s *Store) List(ctx context.Context, prefix string) ([]zenbun.ObjectInfo, error) {
 	var result []zenbun.ObjectInfo
 	token := ""
@@ -331,7 +335,7 @@ func (s *Store) List(ctx context.Context, prefix string) ([]zenbun.ObjectInfo, e
 			return nil, err
 		}
 		if status != http.StatusOK {
-			return nil, s3Error("list", status, body)
+			return nil, responseError("list", status, body)
 		}
 		var page struct {
 			Contents []struct {

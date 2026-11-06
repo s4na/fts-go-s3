@@ -63,11 +63,11 @@ func TestVersionThreeRoundTrip(t *testing.T) {
 			t.Fatalf("hasDocument(%q) = %t, %v", key, found, err)
 		}
 	}
-	state, err := segmentDocuments(ctx, reader, false)
+	state, err := segmentDocumentTable(ctx, reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	full, err := segmentDocuments(ctx, openEncoded(t, data, count), true)
+	full, err := segmentContents(ctx, openEncoded(t, data, count))
 	if err != nil {
 		t.Fatal(err)
 	}

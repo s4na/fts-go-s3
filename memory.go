@@ -53,7 +53,7 @@ func (s *MemoryStore) Get(ctx context.Context, key string, r *ByteRange) (Object
 // does not hold, and an error if both conditions are set.
 func (s *MemoryStore) Put(ctx context.Context, key string, data []byte, options PutOptions) (string, error) {
 	if options.IfNoneMatch && options.IfMatch != "" {
-		return "", errors.New("put: mutually exclusive conditions")
+		return "", errors.New("zenbun: put: mutually exclusive conditions")
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -77,7 +77,7 @@ func (s *MemoryStore) Put(ctx context.Context, key string, data []byte, options 
 	return etag, nil
 }
 
-// Delete succeeds if the object is already absent.
+// Delete implements Store. It succeeds if the object is already absent.
 func (s *MemoryStore) Delete(ctx context.Context, key string) error {
 	if err := ctx.Err(); err != nil {
 		return err

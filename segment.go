@@ -105,10 +105,11 @@ func terms(text string) []string {
 	return out
 }
 
-// A segment contains a sorted document table, posting lists, dictionary blocks,
-// a sparse index and a fixed-size footer. encodeSegment inverts documents into postings and streams them through a
-// segmentWriter. The inversion is the caller's batch; the writer itself keeps
-// only the sparse indexes, the Bloom filter and one block of each kind.
+// encodeSegment inverts documents into postings and streams them through a
+// segmentWriter. A segment contains a sorted document table, posting lists,
+// dictionary blocks, a sparse index and a fixed-size footer. The inversion
+// holds the whole batch; the writer itself keeps only the sparse indexes, the
+// Bloom filter and one block of each kind.
 func encodeSegment(docs map[string]indexedDocument) ([]byte, error) {
 	keys := make([]string, 0, len(docs))
 	for key := range docs {

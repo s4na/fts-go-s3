@@ -38,7 +38,7 @@ func (i *Index) Sync(ctx context.Context, source Store, sourcePrefix string) err
 		if err != nil {
 			return err
 		}
-		docs, err := segmentDocuments(ctx, reader, false)
+		docs, err := segmentDocumentTable(ctx, reader)
 		if err != nil {
 			return err
 		}

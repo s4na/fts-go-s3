@@ -330,8 +330,8 @@ func FuzzSegment(f *testing.F) {
 			if len(reader.docFirst) > 0 {
 				_, _ = reader.documentBlock(ctx, 0)
 			}
-			_, _ = segmentDocuments(ctx, reader, false)
-			_, _ = segmentDocuments(ctx, reader, true)
+			_, _ = segmentDocumentTable(ctx, reader)
+			_, _ = segmentContents(ctx, reader)
 		}
 	})
 }
@@ -1074,11 +1074,11 @@ func TestSegmentDocumentsWithoutTerms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	full, err := segmentDocuments(ctx, reader, true)
+	full, err := segmentContents(ctx, reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, err := segmentDocuments(ctx, reader, false)
+	state, err := segmentDocumentTable(ctx, reader)
 	if err != nil {
 		t.Fatal(err)
 	}
