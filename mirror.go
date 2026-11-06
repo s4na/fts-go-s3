@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"unicode/utf8"
-
-	"golang.org/x/text/unicode/norm"
 )
 
 // Mirror optionally stores document copies next to an index. Document IDs are
@@ -126,7 +124,7 @@ func (m *Mirror) search(ctx context.Context, query string, limit int) ([]Mirrore
 	if err != nil {
 		return nil, err
 	}
-	needle := strings.ToLower(norm.NFKC.String(query))
+	needle := normalize(query)
 	var result []MirroredDocument
 	for _, key := range keys {
 		obj, err := m.store.Get(ctx, m.prefix+key, nil)
@@ -136,7 +134,7 @@ func (m *Mirror) search(ctx context.Context, query string, limit int) ([]Mirrore
 		if !utf8.Valid(obj.Data) {
 			return nil, fmt.Errorf("zenbun: document copy %q is not valid UTF-8", key)
 		}
-		if strings.Contains(strings.ToLower(norm.NFKC.String(string(obj.Data))), needle) {
+		if strings.Contains(normalize(string(obj.Data)), needle) {
 			result = append(result, MirroredDocument{Key: key, Data: obj.Data})
 			if limit > 0 && len(result) == limit {
 				break
