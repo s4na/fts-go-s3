@@ -112,11 +112,11 @@ func run(args []string) error {
 	flags.BoolVar(&config.virtualHost, "virtual-host", false, "use S3 virtual-host addressing")
 	grace := flags.Duration("grace", 24*time.Hour, "reclaim grace period")
 	var findOptions zenbun.FindOptions
-	flags.Func("mode", "find output: snippets, keys or count (default snippets)", func(value string) error {
+	flags.Func("mode", "find output: snippets, keys or count (default snippets); count also stops at -limit", func(value string) error {
 		findOptions.Mode = zenbun.FindMode(value)
 		return nil
 	})
-	flags.IntVar(&findOptions.Limit, "limit", 0, "find: maximum matching documents (default 20)")
+	flags.IntVar(&findOptions.Limit, "limit", 0, "find: maximum matching documents, also for count mode (default 20); raise it or page with -after to total")
 	flags.IntVar(&findOptions.Context, "context", 0, "find: lines around each matching line")
 	flags.IntVar(&findOptions.MaxSnippetsPerDoc, "max-snippets", 0, "find: snippets per document (default 3)")
 	flags.IntVar(&findOptions.MaxBytes, "max-bytes", 0, "find, read: total text bytes (default 16384)")

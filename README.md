@@ -329,8 +329,8 @@ if result.Truncated {
 
 | `FindOptions` | 内容 | 既定値 |
 |---|---|---|
-| `Mode` | `snippets`（一致した行と前後の行）・`keys`（キーだけ）・`count`（件数だけ） | `snippets` |
-| `Limit` | 本文で一致を確認できた文書がこの数に達したら止める | 20 |
+| `Mode` | `snippets`（一致した行と前後の行）・`keys`（キーだけ）・`count`（件数だけ。`Limit` で止まるので総数とは限らない） | `snippets` |
+| `Limit` | 本文で一致を確認できた文書がこの数に達したら止める。`count` も同じ。総数が必要なら `Limit` を大きくするか、`After` に `Next` を渡して `Count` を足し合わせる | 20 |
 | `Context` | 一致した行の前後に付ける行数（最大 20） | 0 |
 | `MaxSnippetsPerDoc` | 1 文書あたりの抜粋の数 | 3 |
 | `MaxBytes` | 抜粋の合計バイト数。超えた分は文字の途中で切らずに打ち切る | 16 KiB |
