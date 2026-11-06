@@ -82,11 +82,11 @@ func TestMemoryStoreConcurrentConditionalWrites(t *testing.T) {
 		case errors.Is(err, ErrConflict):
 			conflicts++
 		default:
-			t.Fatalf("unexpected error: %v", err)
+			t.Errorf("Put(IfMatch) error = %v, want nil or ErrConflict", err)
 		}
 	}
 	if success != 1 || conflicts != 1 {
-		t.Fatalf("successes=%d conflicts=%d", success, conflicts)
+		t.Errorf("Put(IfMatch) successes = %d, conflicts = %d, want 1 and 1", success, conflicts)
 	}
 }
 
