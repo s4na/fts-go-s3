@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -77,12 +78,12 @@ func run() error {
 	endpoint := flag.String("endpoint", "", "optional S3 endpoint")
 	flag.Parse()
 	if *batch < 1 {
-		return fmt.Errorf("batch must be positive")
+		return errors.New("batch must be positive")
 	}
 	var backend zenbun.Store = &zenbun.MemoryStore{}
 	if *endpoint != "" {
 		var err error
-		backend, err = s3store.NewS3Store(s3store.S3Config{Endpoint: *endpoint, Bucket: "zenbun-measure", AccessKey: "testaccess", SecretKey: "testsecret"})
+		backend, err = s3store.New(s3store.Config{Endpoint: *endpoint, Bucket: "zenbun-measure", AccessKey: "testaccess", SecretKey: "testsecret"})
 		if err != nil {
 			return err
 		}

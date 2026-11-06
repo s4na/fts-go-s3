@@ -33,7 +33,7 @@ func TestS3AddressingSigningAndRetries(t *testing.T) {
 		}
 		return &http.Response{StatusCode: status, Header: http.Header{"Etag": {"\"etag\""}}, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
 	})
-	store, err := NewS3Store(S3Config{Endpoint: "https://example.test/base", Bucket: "bucket", AccessKey: "access", SecretKey: "secret", SessionToken: "session", VirtualHost: true, HTTPClient: &http.Client{Transport: transport}})
+	store, err := New(Config{Endpoint: "https://example.test/base", Bucket: "bucket", AccessKey: "access", SecretKey: "secret", SessionToken: "session", VirtualHost: true, HTTPClient: &http.Client{Transport: transport}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestS3AddressingSigningAndRetries(t *testing.T) {
 	}
 	attempts = 0
 	_, err = store.Put(context.Background(), "a +/日", []byte("x"), zenbun.PutOptions{IfNoneMatch: true})
-	var response *S3Error
+	var response *Error
 	if !errors.As(err, &response) || response.StatusCode != http.StatusServiceUnavailable || attempts != 1 {
 		t.Fatalf("conditional put: %v attempts=%d", err, attempts)
 	}

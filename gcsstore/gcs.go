@@ -24,27 +24,27 @@ import (
 // DefaultEndpoint is the Google Cloud Storage JSON API endpoint.
 const DefaultEndpoint = "https://storage.googleapis.com"
 
-// GCSConfig configures a bucket. AccessToken is a static OAuth 2.0 access token
+// Config configures a bucket. AccessToken is a static OAuth 2.0 access token
 // sent as a bearer token; when it is empty and HTTPClient is nil,
 // GOOGLE_OAUTH_ACCESS_TOKEN is read from the environment. To refresh tokens,
 // pass an authenticated HTTPClient such as one from golang.org/x/oauth2/google
 // and leave AccessToken empty. Endpoint defaults to DefaultEndpoint.
-type GCSConfig struct {
+type Config struct {
 	Endpoint, Bucket, AccessToken string
 	HTTPClient                    *http.Client
 }
 
-var _ zenbun.Store = (*GCSStore)(nil)
+var _ zenbun.Store = (*Store)(nil)
 
-// GCSStore implements zenbun.Store using the Cloud Storage JSON API.
-type GCSStore struct {
-	config   GCSConfig
+// Store implements zenbun.Store using the Cloud Storage JSON API.
+type Store struct {
+	config   Config
 	endpoint *url.URL
 	client   *http.Client
 }
 
-// NewGCSStore creates a store for a Cloud Storage bucket.
-func NewGCSStore(config GCSConfig) (*GCSStore, error) {
+// New creates a store for a Cloud Storage bucket.
+func New(config Config) (*Store, error) {
 	if config.Endpoint == "" {
 		config.Endpoint = DefaultEndpoint
 	}
@@ -65,7 +65,7 @@ func NewGCSStore(config GCSConfig) (*GCSStore, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
-	return &GCSStore{config: config, endpoint: endpoint, client: client}, nil
+	return &Store{config: config, endpoint: endpoint, client: client}, nil
 }
 
 // escapePath percent-encodes everything except unreserved characters, so
@@ -86,7 +86,7 @@ func escapePath(s string) string {
 	return b.String()
 }
 
-func (s *GCSStore) objectURL(upload bool, key string, query url.Values) string {
+func (s *Store) objectURL(upload bool, key string, query url.Values) string {
 	base := strings.TrimRight(s.endpoint.String(), "/")
 	if upload {
 		base += "/upload"
@@ -101,7 +101,7 @@ func (s *GCSStore) objectURL(upload bool, key string, query url.Values) string {
 	return base
 }
 
-func (s *GCSStore) request(ctx context.Context, method, target string, headers http.Header, data []byte, retry bool) (int, http.Header, []byte, error) {
+func (s *Store) request(ctx context.Context, method, target string, headers http.Header, data []byte, retry bool) (int, http.Header, []byte, error) {
 	attempts := 1
 	if retry {
 		attempts = 4
@@ -153,13 +153,14 @@ func (s *GCSStore) request(ctx context.Context, method, target string, headers h
 	panic("unreachable")
 }
 
-// GCSError reports a Cloud Storage HTTP error not mapped to a Store sentinel.
-type GCSError struct {
+// Error reports a Cloud Storage HTTP error not mapped to a Store sentinel.
+// Store methods return it as *Error; use errors.As to inspect it.
+type Error struct {
 	Operation  string
 	StatusCode int
 }
 
-func (e *GCSError) Error() string {
+func (e *Error) Error() string {
 	return fmt.Sprintf("gcs %s: HTTP %d", e.Operation, e.StatusCode)
 }
 
@@ -172,11 +173,11 @@ func gcsError(operation string, status int) error {
 	case http.StatusRequestedRangeNotSatisfiable:
 		return fmt.Errorf("gcs %s: %w", operation, zenbun.ErrInvalidRange)
 	default:
-		return &GCSError{Operation: operation, StatusCode: status}
+		return &Error{Operation: operation, StatusCode: status}
 	}
 }
 
-func (s *GCSStore) Get(ctx context.Context, key string, r *zenbun.ByteRange) (zenbun.Object, error) {
+func (s *Store) Get(ctx context.Context, key string, r *zenbun.ByteRange) (zenbun.Object, error) {
 	headers := make(http.Header)
 	if r != nil {
 		if r.Start < 0 || r.End <= r.Start {
@@ -209,7 +210,7 @@ type objectResource struct {
 	Updated    string `json:"updated"`
 }
 
-func (s *GCSStore) Put(ctx context.Context, key string, data []byte, options zenbun.PutOptions) (string, error) {
+func (s *Store) Put(ctx context.Context, key string, data []byte, options zenbun.PutOptions) (string, error) {
 	if options.IfNoneMatch && options.IfMatch != "" {
 		return "", errors.New("put: mutually exclusive conditions")
 	}
@@ -245,7 +246,7 @@ func (s *GCSStore) Put(ctx context.Context, key string, data []byte, options zen
 	return object.Generation, nil
 }
 
-func (s *GCSStore) Delete(ctx context.Context, key string) error {
+func (s *Store) Delete(ctx context.Context, key string) error {
 	status, _, _, err := s.request(ctx, http.MethodDelete, s.objectURL(false, key, nil), nil, nil, false)
 	if err != nil {
 		return err
@@ -256,7 +257,7 @@ func (s *GCSStore) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
-func (s *GCSStore) List(ctx context.Context, prefix string) ([]zenbun.ObjectInfo, error) {
+func (s *Store) List(ctx context.Context, prefix string) ([]zenbun.ObjectInfo, error) {
 	var result []zenbun.ObjectInfo
 	token := ""
 	for {

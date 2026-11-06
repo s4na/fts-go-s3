@@ -33,7 +33,7 @@ func TestGCSAddressingAuthAndRetries(t *testing.T) {
 		}
 		return &http.Response{StatusCode: status, Header: http.Header{"X-Goog-Generation": {"42"}}, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
 	})
-	store, err := NewGCSStore(GCSConfig{Endpoint: "https://example.test/base", Bucket: "bucket", AccessToken: "token", HTTPClient: &http.Client{Transport: transport}})
+	store, err := New(Config{Endpoint: "https://example.test/base", Bucket: "bucket", AccessToken: "token", HTTPClient: &http.Client{Transport: transport}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestGCSConditionalPut(t *testing.T) {
 		}
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"name":"a","generation":"8"}`)), Request: req}, nil
 	})
-	store, err := NewGCSStore(GCSConfig{Bucket: "bucket", HTTPClient: &http.Client{Transport: transport}})
+	store, err := New(Config{Bucket: "bucket", HTTPClient: &http.Client{Transport: transport}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,11 +75,11 @@ func TestGCSConditionalPut(t *testing.T) {
 
 func TestGCSRequiresCredentials(t *testing.T) {
 	t.Setenv("GOOGLE_OAUTH_ACCESS_TOKEN", "")
-	if _, err := NewGCSStore(GCSConfig{Bucket: "bucket"}); err == nil {
+	if _, err := New(Config{Bucket: "bucket"}); err == nil {
 		t.Fatal("missing credentials accepted")
 	}
 	t.Setenv("GOOGLE_OAUTH_ACCESS_TOKEN", "env-token")
-	store, err := NewGCSStore(GCSConfig{Bucket: "bucket"})
+	store, err := New(Config{Bucket: "bucket"})
 	if err != nil || store.config.AccessToken != "env-token" || store.endpoint.String() != DefaultEndpoint {
 		t.Fatalf("environment token: %+v %v", store, err)
 	}

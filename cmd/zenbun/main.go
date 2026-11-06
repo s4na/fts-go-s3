@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -25,7 +26,7 @@ type storageConfig struct {
 func newStore(config storageConfig) (zenbun.Store, error) {
 	switch config.kind {
 	case "s3":
-		return s3store.NewS3Store(s3store.S3Config{
+		return s3store.New(s3store.Config{
 			Endpoint:    firstNonEmpty(config.endpoint, os.Getenv("S3_ENDPOINT")),
 			Bucket:      firstNonEmpty(config.bucket, os.Getenv("S3_BUCKET")),
 			Region:      firstNonEmpty(config.region, os.Getenv("AWS_REGION")),
@@ -33,9 +34,9 @@ func newStore(config storageConfig) (zenbun.Store, error) {
 		})
 	case "gcs":
 		if config.region != "" || config.virtualHost {
-			return nil, fmt.Errorf("-region and -virtual-host apply only to s3")
+			return nil, errors.New("-region and -virtual-host apply only to s3")
 		}
-		return gcsstore.NewGCSStore(gcsstore.GCSConfig{
+		return gcsstore.New(gcsstore.Config{
 			Endpoint: firstNonEmpty(config.endpoint, os.Getenv("GCS_ENDPOINT")),
 			Bucket:   firstNonEmpty(config.bucket, os.Getenv("GCS_BUCKET")),
 		})
@@ -55,7 +56,7 @@ func firstNonEmpty(values ...string) string {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: zenbun {sync|search|find|read|compact|reclaim} [options]")
+		return errors.New("usage: zenbun {sync|search|find|read|compact|reclaim} [options]")
 	}
 	command := args[0]
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
@@ -97,12 +98,12 @@ func run(args []string) error {
 	switch command {
 	case "sync":
 		if flags.NArg() != 0 {
-			return fmt.Errorf("sync takes no arguments")
+			return errors.New("sync takes no arguments")
 		}
 		return zenbun.RetryConflict(ctx, 3, func(ctx context.Context) error { return index.Sync(ctx, store, *source) })
 	case "search":
 		if flags.NArg() != 1 {
-			return fmt.Errorf("search requires one query")
+			return errors.New("search requires one query")
 		}
 		keys, err := index.Search(ctx, flags.Arg(0))
 		if err != nil {
@@ -114,7 +115,7 @@ func run(args []string) error {
 		return nil
 	case "find":
 		if flags.NArg() != 1 {
-			return fmt.Errorf("find requires one JSON query")
+			return errors.New("find requires one JSON query")
 		}
 		query, err := parseQuery(flags.Arg(0))
 		if err != nil {
@@ -129,7 +130,7 @@ func run(args []string) error {
 		return encoder.Encode(result)
 	case "read":
 		if flags.NArg() != 1 {
-			return fmt.Errorf("read requires one key")
+			return errors.New("read requires one key")
 		}
 		readOptions.MaxBytes = findOptions.MaxBytes
 		result, err := index.Read(ctx, store, flags.Arg(0), readOptions)
@@ -141,7 +142,7 @@ func run(args []string) error {
 		return encoder.Encode(result)
 	case "compact":
 		if flags.NArg() != 0 {
-			return fmt.Errorf("compact takes no arguments")
+			return errors.New("compact takes no arguments")
 		}
 		for {
 			var changed bool
@@ -156,7 +157,7 @@ func run(args []string) error {
 		}
 	case "reclaim":
 		if flags.NArg() != 0 {
-			return fmt.Errorf("reclaim takes no arguments")
+			return errors.New("reclaim takes no arguments")
 		}
 		var count int
 		err := zenbun.RetryConflict(ctx, 3, func(ctx context.Context) error {
@@ -183,7 +184,7 @@ func parseQuery(text string) (zenbun.Query, error) {
 	}
 	// More misses a stray closing bracket, so require the end of input instead.
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return zenbun.Query{}, fmt.Errorf("invalid query JSON: trailing data")
+		return zenbun.Query{}, errors.New("invalid query JSON: trailing data")
 	}
 	return query, nil
 }
