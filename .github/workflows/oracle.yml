@@ -58,13 +58,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          run_id=$(gh run list --workflow oracle.yml --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
-          if [ -z "$run_id" ] || [ "$run_id" = null ]; then
+          # Use the latest main run that uploaded metrics. The scale job can
+          # fail the whole run while oracle still succeeds, so the run's
+          # overall conclusion is not used to pick the baseline.
+          mkdir -p .data/baseline
+          found=
+          for run_id in $(gh run list --workflow oracle.yml --branch main --status completed --limit 20 --json databaseId --jq '.[].databaseId' 2>/dev/null || true); do
+            if gh run download "$run_id" --name metrics --dir .data/baseline 2>/dev/null; then
+              found=1
+              break
+            fi
+          done
+          if [ -z "$found" ]; then
             echo 'No main measurement is available yet.' >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          mkdir -p .data/baseline
-          gh run download "$run_id" --name metrics --dir .data/baseline
           python scripts/compare-metrics.py .data/baseline/metrics.json .data/metrics.json > .data/comparison.md
           cat .data/comparison.md >> "$GITHUB_STEP_SUMMARY"
       - name: Publish comparison on PR

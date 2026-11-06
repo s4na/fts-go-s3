@@ -136,12 +136,13 @@ func run() error {
 		}
 		backend = disk
 	}
-	source, err := newDiskStore(filepath.Join(*dataDir, "source"))
+	sourceDisk, err := newDiskStore(filepath.Join(*dataDir, "source"))
 	if err != nil {
 		return err
 	}
 	ctx := context.Background()
 	store := &meter{Store: backend}
+	source := &meter{Store: sourceDisk}
 	open := func(prefix string) (*zenbun.Index, error) { return zenbun.Open(store, prefix) }
 
 	data, err := os.ReadFile(*queries)
@@ -180,7 +181,7 @@ func run() error {
 
 	operations := make(map[string]operation)
 	measure := func(name string, fn func() error) error {
-		op, err := measureOperation(store, fn)
+		op, err := measureOperation(store, source, fn)
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
@@ -225,20 +226,28 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	results := make([][]string, len(items))
+	// Results are discarded inside the measured operation so that the peak
+	// heap reflects one search at a time, not the recall harness holding every
+	// result. They are collected again below for the recall check.
 	if err := measure("search", func() error {
-		for n, item := range items {
-			keys, err := searchIndex.Search(ctx, item.Query)
-			if err != nil {
+		for _, item := range items {
+			if _, err := searchIndex.Search(ctx, item.Query); err != nil {
 				return err
 			}
-			results[n] = keys
 		}
 		return nil
 	}); err != nil {
 		return err
 	}
 	gets, received := operations["search"].Gets, operations["search"].ReceivedBytes
+	results := make([][]string, len(items))
+	for n, item := range items {
+		keys, err := searchIndex.Search(ctx, item.Query)
+		if err != nil {
+			return err
+		}
+		results[n] = keys
+	}
 
 	// Verify recall against a linear scan, streaming the corpus once.
 	normalizedQueries := make([]string, len(items))
