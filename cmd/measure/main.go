@@ -9,6 +9,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -70,6 +72,32 @@ func readRatio(sourceBytes, received int64, queries int) (fraction, inverse *flo
 	return fraction, inverse
 }
 
+// corpusDocuments calls fn for each document in a JSONL corpus, holding only
+// one document at a time.
+func corpusDocuments(path string, fn func(document) error) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 4096), 64<<20)
+	for scanner.Scan() {
+		var doc document
+		if err := json.Unmarshal(scanner.Bytes(), &doc); err != nil {
+			return err
+		}
+		if err := fn(doc); err != nil {
+			return err
+		}
+	}
+	return scanner.Err()
+}
+
+func normalize(s string) string { return strings.ToLower(norm.NFKC.String(s)) }
+
+const sourcePrefix = "docs/"
+
 func run() error {
 	corpus := flag.String("corpus", "", "input JSONL corpus")
 	queries := flag.String("queries", "testdata/queries.json", "query JSON")
@@ -80,51 +108,32 @@ func run() error {
 	if *batch < 1 {
 		return errors.New("batch must be positive")
 	}
-	var backend zenbun.Store = &zenbun.MemoryStore{}
+	dataDir, err := os.MkdirTemp("", "zenbun-measure-")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(dataDir) }()
+	var backend zenbun.Store
 	if *endpoint != "" {
-		var err error
 		backend, err = s3store.New(s3store.Config{Endpoint: *endpoint, Bucket: "zenbun-measure", AccessKey: "testaccess", SecretKey: "testsecret"})
 		if err != nil {
 			return err
 		}
+	} else {
+		disk, err := newDiskStore(filepath.Join(dataDir, "index"))
+		if err != nil {
+			return err
+		}
+		backend = disk
+	}
+	sourceStore, err := newDiskStore(filepath.Join(dataDir, "source"))
+	if err != nil {
+		return err
 	}
 	ctx := context.Background()
 	store := &meter{Store: backend}
-	index, err := zenbun.Open(store, "index/")
-	if err != nil {
-		return err
-	}
-	started := time.Now()
-	f, err := os.Open(*corpus)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = f.Close() }()
-	var docs []document
-	var sourceBytes int64
-	var changes []zenbun.Change
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 4096), 64<<20)
-	for scanner.Scan() {
-		var doc document
-		if err := json.Unmarshal(scanner.Bytes(), &doc); err != nil {
-			return err
-		}
-		sourceBytes += int64(len(doc.Text))
-		changes = append(changes, zenbun.Change{Key: doc.ID, Data: []byte(doc.Text)})
-		if len(changes) == *batch {
-			if err := index.Apply(ctx, changes); err != nil {
-				return err
-			}
-			changes = nil
-			_, _ = fmt.Fprintf(os.Stderr, "indexed %d documents\n", len(docs)+1)
-		}
-		doc.Text = strings.ToLower(norm.NFKC.String(doc.Text))
-		docs = append(docs, doc)
-	}
-	if err := scanner.Err(); err != nil {
-		return err
-	}
+	open := func(prefix string) (*zenbun.Index, error) { return zenbun.Open(store, prefix) }
+
 	data, err := os.ReadFile(*queries)
 	if err != nil {
 		return err
@@ -136,32 +145,118 @@ func run() error {
 	if len(items) != 178 {
 		return fmt.Errorf("expected 178 queries, got %d", len(items))
 	}
-	if len(changes) > 0 {
-		if err := index.Apply(ctx, changes); err != nil {
-			return err
+
+	// The source copy is written outside measured operations.
+	var sourceBytes int64
+	var documents int
+	var firstKey string
+	if err := corpusDocuments(*corpus, func(doc document) error {
+		sourceBytes += int64(len(doc.Text))
+		if documents == 0 {
+			firstKey = doc.ID
 		}
+		documents++
+		_, err := sourceStore.Put(ctx, sourcePrefix+doc.ID, []byte(doc.Text), zenbun.PutOptions{})
+		return err
+	}); err != nil {
+		return err
 	}
-	buildTime := time.Since(started)
-	store.Gets.Store(0)
-	store.Received.Store(0)
-	store.Puts.Store(0)
-	for _, item := range items {
-		keys, err := index.Search(ctx, item.Query)
+	if documents == 0 {
+		return errors.New("corpus has no documents")
+	}
+
+	operations := make(map[string]operation)
+	measure := func(name string, fn func() error) error {
+		op, err := measureOperation(store, fn)
+		if err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		operations[name] = op
+		_, _ = fmt.Fprintf(os.Stderr, "%s: %.1fs, peak heap delta %d bytes\n", name, op.Seconds, op.PeakHeapDeltaBytes)
+		return nil
+	}
+
+	// Each operation opens a fresh Index so caches from earlier operations do
+	// not count toward its baseline.
+	if err := measure("build", func() error {
+		index, err := open("index/")
 		if err != nil {
 			return err
 		}
-		found := make(map[string]bool, len(keys))
-		for _, key := range keys {
-			found[key] = true
+		var changes []zenbun.Change
+		indexed := 0
+		if err := corpusDocuments(*corpus, func(doc document) error {
+			changes = append(changes, zenbun.Change{Key: doc.ID, Data: []byte(doc.Text)})
+			indexed++
+			if len(changes) < *batch {
+				return nil
+			}
+			if err := index.Apply(ctx, changes); err != nil {
+				return err
+			}
+			changes = nil
+			_, _ = fmt.Fprintf(os.Stderr, "indexed %d documents\n", indexed)
+			return nil
+		}); err != nil {
+			return err
 		}
-		q := strings.ToLower(norm.NFKC.String(item.Query))
-		for _, doc := range docs {
-			if strings.Contains(doc.Text, q) && !found[doc.ID] {
-				return fmt.Errorf("false negative: %q in %q", item.Query, doc.ID)
+		if len(changes) > 0 {
+			return index.Apply(ctx, changes)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	searchIndex, err := open("index/")
+	if err != nil {
+		return err
+	}
+	// Results are discarded inside the measured operation so that the peak
+	// heap reflects one search at a time, not the recall harness holding every
+	// result. They are collected again below for the recall check.
+	if err := measure("search", func() error {
+		for _, item := range items {
+			if _, err := searchIndex.Search(ctx, item.Query); err != nil {
+				return err
 			}
 		}
+		return nil
+	}); err != nil {
+		return err
 	}
-	gets, received := store.Gets.Load(), store.Received.Load()
+	gets, received := operations["search"].Gets, operations["search"].ReceivedBytes
+	results := make([][]string, len(items))
+	for n, item := range items {
+		keys, err := searchIndex.Search(ctx, item.Query)
+		if err != nil {
+			return err
+		}
+		results[n] = keys
+	}
+
+	// Verify recall against a linear scan, streaming the corpus once.
+	normalizedQueries := make([]string, len(items))
+	for n, item := range items {
+		normalizedQueries[n] = normalize(item.Query)
+		sort.Strings(results[n])
+	}
+	if err := corpusDocuments(*corpus, func(doc document) error {
+		text := normalize(doc.Text)
+		for n, q := range normalizedQueries {
+			if !strings.Contains(text, q) {
+				continue
+			}
+			keys := results[n]
+			if at := sort.SearchStrings(keys, doc.ID); at == len(keys) || keys[at] != doc.ID {
+				return fmt.Errorf("false negative: %q in %q", items[n].Query, doc.ID)
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+
 	// Measure real elapsed time with a representative 20ms delay per GET.
 	// Serializing GETs provides a same-corpus, warm-cache comparison.
 	store.delay = 20 * time.Millisecond
@@ -170,7 +265,7 @@ func run() error {
 		store.serialize = serial
 		started := time.Now()
 		for _, item := range items[:sampleCount] {
-			if _, err := index.Search(ctx, item.Query); err != nil {
+			if _, err := searchIndex.Search(ctx, item.Query); err != nil {
 				return 0, err
 			}
 		}
@@ -186,16 +281,60 @@ func run() error {
 	}
 	store.delay = 0
 	store.serialize = false
-	store.Puts.Store(0)
-	if err := index.Apply(ctx, []zenbun.Change{{Key: "measurement-update", Data: []byte("updated document")}}); err != nil {
+
+	if err := measure("apply_one", func() error {
+		index, err := open("index/")
+		if err != nil {
+			return err
+		}
+		return index.Apply(ctx, []zenbun.Change{{Key: "measurement-update", Data: []byte("updated document")}})
+	}); err != nil {
 		return err
 	}
 	manifest, err := store.Get(ctx, "index/manifest", nil)
 	if err != nil {
 		return err
 	}
+
+	compactions := 0
+	if err := measure("compact_all", func() error {
+		index, err := open("index/")
+		if err != nil {
+			return err
+		}
+		for {
+			merged, err := index.Compact(ctx)
+			if err != nil || !merged {
+				return err
+			}
+			compactions++
+		}
+	}); err != nil {
+		return err
+	}
+
+	runSync := func() error {
+		index, err := open("sync-index/")
+		if err != nil {
+			return err
+		}
+		return index.Sync(ctx, sourceStore, sourcePrefix)
+	}
+	if err := measure("sync_initial", runSync); err != nil {
+		return err
+	}
+	if err := measure("sync_unchanged", runSync); err != nil {
+		return err
+	}
+	if _, err := sourceStore.Put(ctx, sourcePrefix+firstKey, []byte("updated document"), zenbun.PutOptions{}); err != nil {
+		return err
+	}
+	if err := measure("sync_one_change", runSync); err != nil {
+		return err
+	}
+
 	fraction, inverse := readRatio(sourceBytes, received, len(items))
-	metrics := map[string]any{"source_document_bytes": sourceBytes, "index_to_full_scan_fraction": fraction, "full_scan_to_index_ratio": inverse, "batch_size": *batch, "documents": len(docs), "queries": len(items), "false_negatives": 0, "search_gets": gets, "search_received_bytes": received, "gets_per_query": float64(gets) / float64(len(items)), "bytes_per_query": float64(received) / float64(len(items)), "single_update_puts": store.Puts.Load(), "manifest_bytes": len(manifest.Data), "build_seconds": buildTime.Seconds(), "latency_sample_queries": sampleCount, "simulated_get_latency_ms": 20, "parallel_latency_seconds": parallelSeconds, "serialized_latency_seconds": serialSeconds}
+	metrics := map[string]any{"source_document_bytes": sourceBytes, "index_to_full_scan_fraction": fraction, "full_scan_to_index_ratio": inverse, "batch_size": *batch, "documents": documents, "queries": len(items), "false_negatives": 0, "search_gets": gets, "search_received_bytes": received, "gets_per_query": float64(gets) / float64(len(items)), "bytes_per_query": float64(received) / float64(len(items)), "single_update_puts": operations["apply_one"].Puts, "manifest_bytes": len(manifest.Data), "build_seconds": operations["build"].Seconds, "latency_sample_queries": sampleCount, "simulated_get_latency_ms": 20, "parallel_latency_seconds": parallelSeconds, "serialized_latency_seconds": serialSeconds, "compactions": compactions, "operations": operations}
 	encoded, err := json.MarshalIndent(metrics, "", "  ")
 	if err != nil {
 		return err

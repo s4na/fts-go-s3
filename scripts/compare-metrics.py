@@ -19,3 +19,16 @@ for key in ('gets_per_query', 'bytes_per_query', 'single_update_puts', 'manifest
         print(f'| {key} | {before_text} | {after_text} | — |')
         continue
     print(f'| {key} | {before:.4f} | {after:.4f} | {after-before:+.4f} |')
+
+before_ops, after_ops = baseline.get('operations') or {}, current.get('operations') or {}
+if after_ops:
+    print('\n#### Peak heap delta (MiB)\n')
+    print('| Operation | Main | PR | Difference |')
+    print('|---|---:|---:|---:|')
+    for name in sorted(after_ops):
+        after = after_ops[name]['peak_heap_delta_bytes'] / 2**20
+        if name not in before_ops:
+            print(f'| {name} | 未計測 | {after:.1f} | — |')
+            continue
+        before = before_ops[name]['peak_heap_delta_bytes'] / 2**20
+        print(f'| {name} | {before:.1f} | {after:.1f} | {after-before:+.1f} |')
