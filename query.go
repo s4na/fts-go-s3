@@ -171,7 +171,9 @@ type FoundDocument struct {
 // of index candidates after After, an upper bound on remaining matches. When
 // Truncated is true, more candidates remain or snippet text was cut; pass Next
 // as After to continue. Count is the number of verified matches in this result,
-// at most Limit; when Truncated is true it is not the total.
+// at most Limit; when Truncated is true it is not the total. Pagination is by
+// document: if MaxBytes cuts a snippet, its remainder is not returned on the
+// next page. Use Read to retrieve the document separately.
 type FindResult struct {
 	Count      int             `json:"count"`
 	Candidates int             `json:"candidates"`
