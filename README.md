@@ -529,6 +529,8 @@ go install github.com/s4na/zenbun/cmd/zenbun@latest
 | `zenbun compact -index <prefix>` | まとめられるセグメントがなくなるまでコンパクション |
 | `zenbun reclaim -index <prefix> -grace <期間>` | 不要なセグメントを回収（`-grace` は `24h` や `90m` の形式、既定値 `24h`） |
 
+オプションは引数より前に置いてください（`zenbun search -index x 日本語`）。引数の後ろに置くとエラーになります。`zenbun help`、`zenbun -h`、`zenbun <コマンド> -h` で使い方を表示します（ストアには接続しません）。
+
 `-storage` で保存先のアダプターを `s3`（既定）か `gcs` から選びます。省略すると環境変数 `ZENBUN_STORAGE` の値を使います。
 
 | オプション | `s3` で省略したとき | `gcs` で省略したとき |
