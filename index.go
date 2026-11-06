@@ -16,7 +16,12 @@ import (
 	"unicode/utf8"
 )
 
-const manifestVersion = 1
+const (
+	manifestVersion = 1
+	// maxCachedSegments bounds the segment readers an Index keeps; the cache
+	// is cleared when it fills.
+	maxCachedSegments = 1024
+)
 
 // Index stores immutable segments under a prefix, separate from source documents.
 //
@@ -55,7 +60,7 @@ func (i *Index) segment(ctx context.Context, ref segmentRef) (*segmentReader, er
 		return nil, err
 	}
 	i.cacheMu.Lock()
-	if i.cache == nil || len(i.cache) >= 1024 {
+	if i.cache == nil || len(i.cache) >= maxCachedSegments {
 		i.cache = make(map[string]*segmentReader)
 	}
 	i.cache[ref.Key] = reader
@@ -201,7 +206,7 @@ func RetryConflict(ctx context.Context, attempts int, operation func(context.Con
 	if attempts < 1 || operation == nil {
 		return errors.New("zenbun: retry requires an operation and positive attempts")
 	}
-	for n := 0; n < attempts; n++ {
+	for n := range attempts {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -222,14 +227,14 @@ func RetryConflict(ctx context.Context, attempts int, operation func(context.Con
 
 // decodeDocumentBlock validates one document-table block. Blocks are records
 // whose first key matches the index.
-func (reader *segmentReader) decodeDocumentBlock(block int, data []byte) ([]documentRecord, error) {
-	expected := min(documentBlockSize, reader.ref.Documents-block*documentBlockSize)
+func (r *segmentReader) decodeDocumentBlock(block int, data []byte) ([]documentRecord, error) {
+	expected := min(documentBlockSize, r.ref.Documents-block*documentBlockSize)
 	invalid := errors.New("zenbun: invalid segment document block")
 	if expected <= 0 {
 		return nil, invalid
 	}
 	var records []documentRecord
-	if err := json.Unmarshal(data, &records); err != nil || len(records) != expected || block >= len(reader.docFirst) || records[0].Key != reader.docFirst[block] {
+	if err := json.Unmarshal(data, &records); err != nil || len(records) != expected || block >= len(r.docFirst) || records[0].Key != r.docFirst[block] {
 		return nil, invalid
 	}
 	for n, record := range records {
@@ -237,7 +242,7 @@ func (reader *segmentReader) decodeDocumentBlock(block int, data []byte) ([]docu
 			return nil, invalid
 		}
 	}
-	if block+1 < len(reader.docFirst) && records[len(records)-1].Key >= reader.docFirst[block+1] {
+	if block+1 < len(r.docFirst) && records[len(records)-1].Key >= r.docFirst[block+1] {
 		return nil, invalid
 	}
 	return records, nil
@@ -245,55 +250,62 @@ func (reader *segmentReader) decodeDocumentBlock(block int, data []byte) ([]docu
 
 // documentBlock reads only IDs in the requested fixed-size block. Cached
 // entries are bounded by their encoded byte size per immutable segment.
-func (reader *segmentReader) documentBlock(ctx context.Context, block int) ([]documentRecord, error) {
-	reader.docMu.Lock()
-	cached := reader.docBlocks[block]
-	reader.docMu.Unlock()
+func (r *segmentReader) documentBlock(ctx context.Context, block int) ([]documentRecord, error) {
+	r.docMu.Lock()
+	cached := r.docBlocks[block]
+	r.docMu.Unlock()
 	if cached != nil {
 		return cached, nil
 	}
-	data, found, err := reader.lookup(ctx, fmt.Sprintf("d%08x", block))
+	data, found, err := r.lookup(ctx, fmt.Sprintf("d%08x", block))
 	if err != nil {
 		return nil, err
 	}
 	if !found {
 		return nil, errors.New("zenbun: missing segment document block")
 	}
-	keys, err := reader.decodeDocumentBlock(block, data)
+	keys, err := r.decodeDocumentBlock(block, data)
 	if err != nil {
 		return nil, err
 	}
-	reader.docMu.Lock()
-	if existing := reader.docBlocks[block]; existing != nil {
-		keys = existing
-	} else if len(data) <= maxDocumentCacheBytes-reader.docBytes {
-		if reader.docBlocks == nil {
-			reader.docBlocks = make(map[int][]documentRecord)
-		}
-		reader.docBlocks[block] = keys
-		reader.docBytes += len(data)
+	return r.cacheDocumentBlock(block, keys, len(data)), nil
+}
+
+// cacheDocumentBlock stores records decoded from size bytes unless the cache
+// is full. It returns the cached records if another caller stored them first.
+func (r *segmentReader) cacheDocumentBlock(block int, records []documentRecord, size int) []documentRecord {
+	r.docMu.Lock()
+	defer r.docMu.Unlock()
+	if cached := r.docBlocks[block]; cached != nil {
+		return cached
 	}
-	reader.docMu.Unlock()
-	return keys, nil
+	if size <= maxDocumentCacheBytes-r.docBytes {
+		if r.docBlocks == nil {
+			r.docBlocks = make(map[int][]documentRecord)
+		}
+		r.docBlocks[block] = records
+		r.docBytes += size
+	}
+	return records
 }
 
 // documentBlockBatch coalesces adjacent document blocks while bounding each read.
 // A single block may exceed the batch target but remains limited by maxMetadataSize.
 // In v3 a dictionary block may sit between two document blocks; the gap is
 // read along with them.
-func (reader *segmentReader) documentBlockBatch(ctx context.Context, first, last int) ([][]documentRecord, error) {
+func (r *segmentReader) documentBlockBatch(ctx context.Context, first, last int) ([][]documentRecord, error) {
 	if first == last {
-		keys, err := reader.documentBlock(ctx, first)
+		keys, err := r.documentBlock(ctx, first)
 		return [][]documentRecord{keys}, err
 	}
 	blocks := make([][]documentRecord, last-first+1)
-	reader.docMu.Lock()
+	r.docMu.Lock()
 	allCached := true
 	for n := first; n <= last; n++ {
-		blocks[n-first] = reader.docBlocks[n]
+		blocks[n-first] = r.docBlocks[n]
 		allCached = allCached && blocks[n-first] != nil
 	}
-	reader.docMu.Unlock()
+	r.docMu.Unlock()
 	if allCached {
 		return blocks, nil
 	}
@@ -302,14 +314,14 @@ func (reader *segmentReader) documentBlockBatch(ctx context.Context, first, last
 	dictionaries := make(map[int][]dictionaryEntry)
 	for block := first; block <= last; block++ {
 		term := fmt.Sprintf("d%08x", block)
-		index := sort.Search(len(reader.blocks), func(i int) bool { return reader.blocks[i].First > term }) - 1
+		index := sort.Search(len(r.blocks), func(i int) bool { return r.blocks[i].First > term }) - 1
 		if index < 0 {
 			return nil, errors.New("zenbun: missing segment document block")
 		}
 		dictionary, ok := dictionaries[index]
 		if !ok {
 			var err error
-			dictionary, err = reader.dictionary(ctx, index)
+			dictionary, err = r.dictionary(ctx, index)
 			if err != nil {
 				return nil, err
 			}
@@ -331,38 +343,27 @@ func (reader *segmentReader) documentBlockBatch(ctx context.Context, first, last
 	const maxBatchBytes = 1 << 20
 	if end-start > maxBatchBytes {
 		mid := first + (last-first)/2
-		left, err := reader.documentBlockBatch(ctx, first, mid)
+		left, err := r.documentBlockBatch(ctx, first, mid)
 		if err != nil {
 			return nil, err
 		}
-		right, err := reader.documentBlockBatch(ctx, mid+1, last)
+		right, err := r.documentBlockBatch(ctx, mid+1, last)
 		if err != nil {
 			return nil, err
 		}
 		return append(left, right...), nil
 	}
-	data, err := readRange(ctx, reader.store, reader.ref.Key, start, end-start)
+	data, err := readRange(ctx, r.store, r.ref.Key, start, end-start)
 	if err != nil {
 		return nil, err
 	}
 	for n, entry := range entries {
 		value := data[entry.Offset-start : entry.Offset-start+entry.Length]
-		keys, err := reader.decodeDocumentBlock(first+n, value)
+		keys, err := r.decodeDocumentBlock(first+n, value)
 		if err != nil {
 			return nil, err
 		}
-		reader.docMu.Lock()
-		if cached := reader.docBlocks[first+n]; cached != nil {
-			keys = cached
-		} else if len(value) <= maxDocumentCacheBytes-reader.docBytes {
-			if reader.docBlocks == nil {
-				reader.docBlocks = make(map[int][]documentRecord)
-			}
-			reader.docBlocks[first+n] = keys
-			reader.docBytes += len(value)
-		}
-		reader.docMu.Unlock()
-		blocks[n] = keys
+		blocks[n] = r.cacheDocumentBlock(first+n, keys, len(value))
 	}
 	return blocks, nil
 }
@@ -389,13 +390,13 @@ func validatePosting(data []byte, documents int, fn func(uint64)) error {
 }
 
 // decodePosting resolves document IDs without reading the complete key table.
-func (reader *segmentReader) decodePosting(ctx context.Context, data []byte) ([]string, error) {
+func (r *segmentReader) decodePosting(ctx context.Context, data []byte) ([]string, error) {
 	// Validate all IDs before loading any blocks so malformed entries fail
 	// without partial results.
-	if err := validatePosting(data, reader.ref.Documents, nil); err != nil {
+	if err := validatePosting(data, r.ref.Documents, nil); err != nil {
 		return nil, err
 	}
-	keys := make([]string, 0)
+	var keys []string
 	var id uint64
 	for len(data) > 0 {
 		first := -1
@@ -408,14 +409,14 @@ func (reader *segmentReader) decodePosting(ctx context.Context, data []byte) ([]
 			if first < 0 {
 				first = block
 			}
-			if last >= 0 && (block > last+1 || block-first >= 32) {
+			if last >= 0 && (block > last+1 || block-first >= documentBatchBlocks) {
 				break
 			}
 			last = block
 			nextID += delta
 			remaining = remaining[n:]
 		}
-		blocks, err := reader.documentBlockBatch(ctx, first, last)
+		blocks, err := r.documentBlockBatch(ctx, first, last)
 		if err != nil {
 			return nil, err
 		}
@@ -434,15 +435,15 @@ func (reader *segmentReader) decodePosting(ctx context.Context, data []byte) ([]
 
 // hasDocument reports whether the segment holds a record, live or deleted,
 // for key. It answers from the document table without reading records.
-func (reader *segmentReader) hasDocument(ctx context.Context, key string) (bool, error) {
-	if !bloomContains(reader.bloom, key) {
+func (r *segmentReader) hasDocument(ctx context.Context, key string) (bool, error) {
+	if !bloomContains(r.bloom, key) {
 		return false, nil
 	}
-	block := sort.Search(len(reader.docFirst), func(i int) bool { return reader.docFirst[i] > key }) - 1
+	block := sort.Search(len(r.docFirst), func(i int) bool { return r.docFirst[i] > key }) - 1
 	if block < 0 {
 		return false, nil
 	}
-	records, err := reader.documentBlock(ctx, block)
+	records, err := r.documentBlock(ctx, block)
 	if err != nil {
 		return false, err
 	}
@@ -648,8 +649,8 @@ func (s *segmentSnapshot) Get(ctx context.Context, key string, r *ByteRange) (Ob
 func segmentDocumentTable(ctx context.Context, reader *segmentReader) (map[string]indexedDocument, error) {
 	docs := make(map[string]indexedDocument, reader.ref.Documents)
 	count := len(reader.docFirst)
-	for first := 0; first < count; first += 32 {
-		blocks, err := reader.documentBlockBatch(ctx, first, min(first+32, count)-1)
+	for first := 0; first < count; first += documentBatchBlocks {
+		blocks, err := reader.documentBlockBatch(ctx, first, min(first+documentBatchBlocks, count)-1)
 		if err != nil {
 			return nil, err
 		}

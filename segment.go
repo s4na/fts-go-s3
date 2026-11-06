@@ -14,18 +14,20 @@ import (
 	"strings"
 	"sync"
 	"unicode/utf8"
-
-	"golang.org/x/text/unicode/norm"
 )
 
-// segmentVersion is the only segment format this library reads and writes.
-const segmentVersion = 3
-const footerSize = 32
-const dictionaryBlockSize = 64
-const maxCachedDictionaryBytes = 128 << 10
-const maxMetadataSize = 64 << 20
-const documentBlockSize = 256
-const maxDocumentCacheBytes = 64 << 10
+const (
+	// segmentVersion is the only segment format this library reads and writes.
+	segmentVersion           = 3
+	footerSize               = 32
+	dictionaryBlockSize      = 64
+	maxCachedDictionaryBytes = 128 << 10
+	maxMetadataSize          = 64 << 20
+	documentBlockSize        = 256
+	maxDocumentCacheBytes    = 64 << 10
+	// documentBatchBlocks bounds the document blocks read in one batch.
+	documentBatchBlocks = 32
+)
 
 var segmentMagic = [8]byte{'Z', 'E', 'N', 'B', 'U', 'N', '0', '1'}
 
@@ -89,7 +91,7 @@ func bloomContains(bloom []byte, key string) bool {
 }
 
 func terms(text string) []string {
-	runes := []rune(strings.ToLower(norm.NFKC.String(text)))
+	runes := []rune(normalize(text))
 	set := make(map[string]struct{})
 	for i, r := range runes {
 		set["u"+string(r)] = struct{}{}
@@ -397,15 +399,15 @@ func openSegment(ctx context.Context, store Store, ref segmentRef) (*segmentRead
 	return &segmentReader{store: store, ref: ref, blocks: blocks, docFirst: index.DocFirst, bloom: index.Bloom, indexOffset: offset}, nil
 }
 
-func (s *segmentReader) lookup(ctx context.Context, term string) ([]byte, bool, error) {
-	if strings.HasPrefix(term, "k") && !bloomContains(s.bloom, term[1:]) {
+func (r *segmentReader) lookup(ctx context.Context, term string) ([]byte, bool, error) {
+	if strings.HasPrefix(term, "k") && !bloomContains(r.bloom, term[1:]) {
 		return nil, false, nil
 	}
-	index := sort.Search(len(s.blocks), func(i int) bool { return s.blocks[i].First > term }) - 1
+	index := sort.Search(len(r.blocks), func(i int) bool { return r.blocks[i].First > term }) - 1
 	if index < 0 {
 		return nil, false, nil
 	}
-	entries, err := s.dictionary(ctx, index)
+	entries, err := r.dictionary(ctx, index)
 	if err != nil {
 		return nil, false, err
 	}
@@ -414,7 +416,7 @@ func (s *segmentReader) lookup(ctx context.Context, term string) ([]byte, bool, 
 		return nil, false, nil
 	}
 	entry := entries[i]
-	data, err := readRange(ctx, s.store, s.ref.Key, entry.Offset, entry.Length)
+	data, err := readRange(ctx, r.store, r.ref.Key, entry.Offset, entry.Length)
 	if err != nil {
 		return nil, false, fmt.Errorf("zenbun: read segment entry: %w", err)
 	}
@@ -422,15 +424,15 @@ func (s *segmentReader) lookup(ctx context.Context, term string) ([]byte, bool, 
 }
 
 // dictionary caches validated immutable blocks up to a bounded JSON byte size per reader.
-func (s *segmentReader) dictionary(ctx context.Context, index int) ([]dictionaryEntry, error) {
-	s.dictMu.Lock()
-	entries, found := s.dictCache[index]
-	s.dictMu.Unlock()
+func (r *segmentReader) dictionary(ctx context.Context, index int) ([]dictionaryEntry, error) {
+	r.dictMu.Lock()
+	entries, found := r.dictCache[index]
+	r.dictMu.Unlock()
 	if found {
 		return entries, nil
 	}
-	block := s.blocks[index]
-	data, err := readRange(ctx, s.store, s.ref.Key, block.Offset, block.Length)
+	block := r.blocks[index]
+	data, err := readRange(ctx, r.store, r.ref.Key, block.Offset, block.Length)
 	if err != nil {
 		return nil, err
 	}
@@ -439,22 +441,22 @@ func (s *segmentReader) dictionary(ctx context.Context, index int) ([]dictionary
 		return nil, errors.New("zenbun: invalid dictionary")
 	}
 	for i, entry := range entries {
-		if !utf8.ValidString(entry.Term) || !validExtent(entry.Offset, entry.Length, s.indexOffset) || entry.Length > maxMetadataSize || i > 0 && entries[i-1].Term >= entry.Term {
+		if !utf8.ValidString(entry.Term) || !validExtent(entry.Offset, entry.Length, r.indexOffset) || entry.Length > maxMetadataSize || i > 0 && entries[i-1].Term >= entry.Term {
 			return nil, errors.New("zenbun: invalid dictionary entry")
 		}
 	}
-	s.dictMu.Lock()
-	defer s.dictMu.Unlock()
+	r.dictMu.Lock()
+	defer r.dictMu.Unlock()
 	// Another caller may have fetched this block while the lock was released.
-	if cached, found := s.dictCache[index]; found {
+	if cached, found := r.dictCache[index]; found {
 		return cached, nil
 	}
-	if len(data) <= maxCachedDictionaryBytes-s.dictBytes {
-		if s.dictCache == nil {
-			s.dictCache = make(map[int][]dictionaryEntry)
+	if len(data) <= maxCachedDictionaryBytes-r.dictBytes {
+		if r.dictCache == nil {
+			r.dictCache = make(map[int][]dictionaryEntry)
 		}
-		s.dictCache[index] = entries
-		s.dictBytes += len(data)
+		r.dictCache[index] = entries
+		r.dictBytes += len(data)
 	}
 	return entries, nil
 }

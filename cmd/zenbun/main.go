@@ -178,18 +178,14 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetEscapeHTML(false)
-		return encoder.Encode(result)
+		return printJSON(result)
 	case "read":
 		readOptions.MaxBytes = findOptions.MaxBytes
 		result, err := index.Read(ctx, store, flags.Arg(0), readOptions)
 		if err != nil {
 			return err
 		}
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetEscapeHTML(false)
-		return encoder.Encode(result)
+		return printJSON(result)
 	case "compact":
 		for {
 			var changed bool
@@ -218,6 +214,14 @@ func run(args []string) error {
 	}
 }
 
+// printJSON writes value to standard output without escaping HTML characters,
+// which appear in document text.
+func printJSON(value any) error {
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetEscapeHTML(false)
+	return encoder.Encode(value)
+}
+
 func argSuffix(what string) string {
 	if what == "" {
 		return ""
@@ -234,7 +238,7 @@ func parseQuery(text string) (zenbun.Query, error) {
 		return zenbun.Query{}, fmt.Errorf("invalid query JSON: %w", err)
 	}
 	// More misses a stray closing bracket, so require the end of input instead.
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return zenbun.Query{}, errors.New("invalid query JSON: trailing data")
 	}
 	return query, nil
