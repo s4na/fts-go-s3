@@ -88,14 +88,14 @@ var argCounts = map[string]struct {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		fmt.Fprint(output, usageText)
-		return nil
+		_, err := fmt.Fprint(output, usageText)
+		return err
 	}
 	command := args[0]
 	switch command {
 	case "help", "-h", "--help", "-help":
-		fmt.Fprint(output, usageText)
-		return nil
+		_, err := fmt.Fprint(output, usageText)
+		return err
 	}
 	spec, known := argCounts[command]
 	if !known {
@@ -128,7 +128,9 @@ func run(args []string) error {
 	flags.SetOutput(io.Discard)
 	if err := flags.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintf(output, "usage: zenbun %s [options]%s\n\noptions:\n", command, argSuffix(spec.what))
+			if _, err := fmt.Fprintf(output, "usage: zenbun %s [options]%s\n\noptions:\n", command, argSuffix(spec.what)); err != nil {
+				return err
+			}
 			flags.SetOutput(output)
 			flags.PrintDefaults()
 			return nil
