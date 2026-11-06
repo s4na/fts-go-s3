@@ -643,16 +643,6 @@ func (s *segmentSnapshot) Get(ctx context.Context, key string, r *ByteRange) (Ob
 	return Object{}, io.ErrUnexpectedEOF
 }
 
-// segmentDocuments reads every document record of a segment. With withTerms
-// false, the returned records omit Terms so callers that only compare ETags
-// and deletion state, such as Sync, keep memory independent of term counts.
-func segmentDocuments(ctx context.Context, reader *segmentReader, withTerms bool) (map[string]indexedDocument, error) {
-	if withTerms {
-		return segmentContents(ctx, reader)
-	}
-	return segmentDocumentTable(ctx, reader)
-}
-
 // segmentDocumentTable reads the document table, which holds deletion state
 // and ETags but no terms, in batched ranges.
 func segmentDocumentTable(ctx context.Context, reader *segmentReader) (map[string]indexedDocument, error) {
@@ -727,7 +717,8 @@ func segmentContents(ctx context.Context, reader *segmentReader) (map[string]ind
 }
 
 // Compact merges one adjacent pair of similarly sized segments. It preserves
-// update order and tombstones; subsequent calls merge additional pairs.
+// update order and tombstones; subsequent calls merge additional pairs. It
+// reports whether a pair was merged; false means no pair needs merging.
 func (i *Index) Compact(ctx context.Context) (bool, error) {
 	m, etag, err := i.loadManifest(ctx)
 	if err != nil {
@@ -762,7 +753,7 @@ func (i *Index) Compact(ctx context.Context) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		part, err := segmentDocuments(ctx, reader, true)
+		part, err := segmentContents(ctx, reader)
 		if err != nil {
 			return false, err
 		}
@@ -801,7 +792,8 @@ func (i *Index) Compact(ctx context.Context) (bool, error) {
 // maximum reader duration plus clock skew and storage-listing delay.
 // The conditional manifest barrier prevents stale writers from publishing
 // objects discovered during reclamation. Storage must provide strong listing
-// and conditional-write consistency.
+// and conditional-write consistency. It returns the number of segments
+// deleted by this call.
 func (i *Index) Reclaim(ctx context.Context, grace time.Duration) (int, error) {
 	if grace <= 0 {
 		return 0, errors.New("zenbun: reclaim grace must be positive")

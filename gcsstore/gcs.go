@@ -179,7 +179,7 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("gcs %s: HTTP %d", e.Operation, e.StatusCode)
 }
 
-// gcsErrorInfo parses the JSON error body and reports the first reason and
+// errorInfo parses the JSON error body and reports the first reason and
 // whether the error says the bucket (rather than an object) is missing.
 //
 // GCS answers a missing object and a missing bucket with the same 404 and the
@@ -188,7 +188,7 @@ func (e *Error) Error() string {
 // discriminator, matched case-insensitively on "bucket does not exist"; the
 // reasons "bucketNotFound" / "NoSuchBucket" (XML-API style, used by some
 // emulators) are accepted too. Anything unrecognized is not a missing bucket.
-func gcsErrorInfo(body []byte) (reason string, bucketMissing bool) {
+func errorInfo(body []byte) (reason string, bucketMissing bool) {
 	var e struct {
 		Error struct {
 			Message string `json:"message"`
@@ -221,13 +221,13 @@ func gcsErrorInfo(body []byte) (reason string, bucketMissing bool) {
 	return reason, bucketMissing
 }
 
-func gcsBucketMissing(body []byte) bool {
-	_, missing := gcsErrorInfo(body)
+func isBucketMissing(body []byte) bool {
+	_, missing := errorInfo(body)
 	return missing
 }
 
-func gcsError(operation string, status int, body []byte) error {
-	reason, bucketMissing := gcsErrorInfo(body)
+func responseError(operation string, status int, body []byte) error {
+	reason, bucketMissing := errorInfo(body)
 	if bucketMissing {
 		reason = "BucketNotFound"
 	}
@@ -244,6 +244,7 @@ func gcsError(operation string, status int, body []byte) error {
 	return &Error{Operation: operation, StatusCode: status, Code: reason}
 }
 
+// Get implements zenbun.Store.
 func (s *Store) Get(ctx context.Context, key string, r *zenbun.ByteRange) (zenbun.Object, error) {
 	headers := make(http.Header)
 	if r != nil {
@@ -258,7 +259,7 @@ func (s *Store) Get(ctx context.Context, key string, r *zenbun.ByteRange) (zenbu
 		return zenbun.Object{}, err
 	}
 	if r == nil && status != http.StatusOK || r != nil && status != http.StatusPartialContent {
-		return zenbun.Object{}, gcsError("get", status, body)
+		return zenbun.Object{}, responseError("get", status, body)
 	}
 	if r != nil && int64(len(body)) != r.End-r.Start {
 		return zenbun.Object{}, zenbun.ErrInvalidRange
@@ -277,9 +278,10 @@ type objectResource struct {
 	Updated    string `json:"updated"`
 }
 
+// Put implements zenbun.Store.
 func (s *Store) Put(ctx context.Context, key string, data []byte, options zenbun.PutOptions) (string, error) {
 	if options.IfNoneMatch && options.IfMatch != "" {
-		return "", errors.New("put: mutually exclusive conditions")
+		return "", errors.New("gcs put: mutually exclusive conditions")
 	}
 	query := url.Values{"uploadType": {"media"}, "name": {key}}
 	if options.IfNoneMatch {
@@ -297,11 +299,11 @@ func (s *Store) Put(ctx context.Context, key string, data []byte, options zenbun
 	if err != nil {
 		return "", err
 	}
-	if status == http.StatusNotFound && options.IfMatch != "" && !gcsBucketMissing(body) {
+	if status == http.StatusNotFound && options.IfMatch != "" && !isBucketMissing(body) {
 		return "", fmt.Errorf("gcs put: %w", zenbun.ErrConflict)
 	}
 	if status != http.StatusOK {
-		return "", gcsError("put", status, body)
+		return "", responseError("put", status, body)
 	}
 	var object objectResource
 	if err := json.Unmarshal(body, &object); err != nil {
@@ -313,6 +315,7 @@ func (s *Store) Put(ctx context.Context, key string, data []byte, options zenbun
 	return object.Generation, nil
 }
 
+// Delete implements zenbun.Store.
 func (s *Store) Delete(ctx context.Context, key string) error {
 	status, _, body, err := s.request(ctx, http.MethodDelete, s.objectURL(false, key, nil), nil, nil, false)
 	if err != nil {
@@ -321,13 +324,14 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 	switch {
 	case status == http.StatusNoContent, status == http.StatusOK:
 		return nil
-	case status == http.StatusNotFound && !gcsBucketMissing(body):
+	case status == http.StatusNotFound && !isBucketMissing(body):
 		return nil
 	default:
-		return gcsError("delete", status, body)
+		return responseError("delete", status, body)
 	}
 }
 
+// List implements zenbun.Store.
 func (s *Store) List(ctx context.Context, prefix string) ([]zenbun.ObjectInfo, error) {
 	var result []zenbun.ObjectInfo
 	token := ""
@@ -341,7 +345,7 @@ func (s *Store) List(ctx context.Context, prefix string) ([]zenbun.ObjectInfo, e
 			return nil, err
 		}
 		if status != http.StatusOK {
-			return nil, gcsError("list", status, body)
+			return nil, responseError("list", status, body)
 		}
 		var page struct {
 			Items []objectResource `json:"items"`
