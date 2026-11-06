@@ -45,8 +45,8 @@ func TestVersionThreeRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	reader := openEncoded(t, data, count)
-	if reader.version != segmentVersion || len(reader.docFirst) != 3 {
-		t.Fatalf("version=%d doc_first=%d", reader.version, len(reader.docFirst))
+	if len(reader.docFirst) != 3 {
+		t.Fatalf("doc_first=%d", len(reader.docFirst))
 	}
 	for _, name := range []string{"a", "kdocs/00000"} {
 		if _, found, err := reader.lookup(ctx, name); err != nil || found {
@@ -97,30 +97,6 @@ func TestVersionThreeRoundTrip(t *testing.T) {
 	keys, err := reader.decodePosting(ctx, data)
 	if err != nil || len(keys) == 0 {
 		t.Fatalf("decode posting: %v %v", keys, err)
-	}
-}
-
-// TestVersionThreeIsSmaller checks that dropping per-document records and the
-// key list shrinks segments. The sizes are logged for the PR description.
-func TestVersionThreeIsSmaller(t *testing.T) {
-	docs := make(map[string]indexedDocument)
-	for n := 0; n < 2000; n++ {
-		docs[fmt.Sprintf("docs/%05d.txt", n)] = indexedDocument{
-			Terms: terms(fmt.Sprintf("全文検索の対象となる文書その%d番", n)),
-			ETag:  fmt.Sprintf(`"%032x"`, n),
-		}
-	}
-	v2, err := encodeSegmentVersion(docs, v2SegmentVersion)
-	if err != nil {
-		t.Fatal(err)
-	}
-	v3, err := encodeSegmentVersion(docs, segmentVersion)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("documents=%d v2_bytes=%d v3_bytes=%d ratio=%.3f", len(docs), len(v2), len(v3), float64(len(v3))/float64(len(v2)))
-	if len(v3) >= len(v2) {
-		t.Fatalf("v3 segment is not smaller: v2=%d v3=%d", len(v2), len(v3))
 	}
 }
 

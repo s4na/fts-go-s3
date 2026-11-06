@@ -3,6 +3,7 @@ package zenbun
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -568,21 +569,15 @@ func TestReclaimExcludesWritesAfterBarrier(t *testing.T) {
 	}
 }
 
-func TestMixedSegmentVersions(t *testing.T) {
-	for _, version := range []uint32{legacySegmentVersion, v2SegmentVersion} {
-		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) { testMixedSegmentVersions(t, version) })
-	}
-}
-
-// testMixedSegmentVersions starts from one old-format segment, adds a segment
-// in the current format, and compacts them into the current format.
-func testMixedSegmentVersions(t *testing.T, version uint32) {
+// TestApplyAndCompactOverExistingSegment starts from one published segment,
+// adds a second segment, and compacts them into one.
+func TestApplyAndCompactOverExistingSegment(t *testing.T) {
 	ctx := context.Background()
 	store := &MemoryStore{}
-	old, err := encodeSegmentVersion(map[string]indexedDocument{
+	old, err := encodeSegment(map[string]indexedDocument{
 		"old":  {Terms: terms("猫と犬")},
 		"gone": {Deleted: true},
-	}, version)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -610,21 +605,20 @@ func testMixedSegmentVersions(t *testing.T, version uint32) {
 	queries := []string{"猫", "猫と", "犬", "魚", "鳥"}
 	assertOracle(t, index, want, queries)
 	if ok, err := index.Compact(ctx); err != nil || !ok {
-		t.Fatalf("compact mixed versions: %t, %v", ok, err)
+		t.Fatalf("compact: %t, %v", ok, err)
 	}
 	assertOracle(t, index, want, queries)
 	m, _, err := index.loadManifest(ctx)
 	if err != nil || len(m.Segments) != 1 {
 		t.Fatalf("manifest after compaction: %+v, %v", m, err)
 	}
-	r, err := index.segment(ctx, m.Segments[0])
-	if err != nil || r.version != segmentVersion {
-		t.Fatalf("compacted segment must use the current version: %+v, %v", r, err)
+	if _, err := index.segment(ctx, m.Segments[0]); err != nil {
+		t.Fatalf("open compacted segment: %v", err)
 	}
 }
 
-func TestInvalidVersionTwoPostings(t *testing.T) {
-	reader := &segmentReader{version: segmentVersion, ref: segmentRef{Documents: 2}}
+func TestInvalidPostings(t *testing.T) {
+	reader := &segmentReader{ref: segmentRef{Documents: 2}}
 	for _, data := range [][]byte{{0}, {3}, {1, 0}, {0x80}, {1, 2}, {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 2}} {
 		if _, err := reader.decodePosting(context.Background(), data); err == nil {
 			t.Errorf("accepted invalid posting %x", data)
@@ -779,8 +773,11 @@ func TestDefaultWriterUsesVersionThree(t *testing.T) {
 		t.Fatal(err)
 	}
 	r, err := writer.segment(ctx, m.Segments[0])
-	if err != nil || r.version != segmentVersion {
-		t.Fatalf("default writer must use v3: reader=%+v error=%v", r, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.ref.Documents != 1 {
+		t.Fatalf("unexpected segment: %+v", r.ref)
 	}
 }
 
@@ -872,9 +869,9 @@ func TestSearchReadsOversizedBlockOnlyOnce(t *testing.T) {
 	}
 }
 
-func TestVersionTwoRejectsMissingDocumentBlocks(t *testing.T) {
+func TestSegmentRejectsMissingDocumentBlockSize(t *testing.T) {
 	ctx := context.Background()
-	data, err := encodeSegmentVersion(map[string]indexedDocument{"old": {Terms: terms("猫")}}, v2SegmentVersion)
+	data, err := encodeSegment(map[string]indexedDocument{"old": {Terms: terms("猫")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -895,7 +892,7 @@ func TestVersionTwoRejectsMissingDocumentBlocks(t *testing.T) {
 	}
 	_, err = openSegment(ctx, store, segmentRef{Key: "index/segments/old", Size: int64(len(data)), Documents: 1})
 	if err == nil {
-		t.Fatal("v2 segment without document blocks must be rejected")
+		t.Fatal("segment without document block size must be rejected")
 	}
 }
 
@@ -1095,6 +1092,20 @@ func TestSegmentDocumentsWithoutTerms(t *testing.T) {
 		got := state[key]
 		if got.Terms != nil || got.Deleted != doc.Deleted || got.ETag != doc.ETag {
 			t.Fatalf("state[%q] = %+v; want deleted=%v etag=%q without terms", key, got, doc.Deleted, doc.ETag)
+		}
+	}
+}
+
+func TestOpenSegmentRejectsOtherVersions(t *testing.T) {
+	data, err := encodeSegment(map[string]indexedDocument{"a": {Terms: terms("猫")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range []uint32{0, 1, 2, 4} {
+		footer := append([]byte(nil), data[len(data)-footerSize:]...)
+		binary.BigEndian.PutUint32(footer[8:12], version)
+		if _, _, err := parseFooter(footer, int64(len(data))); err == nil {
+			t.Errorf("accepted segment version %d", version)
 		}
 	}
 }
