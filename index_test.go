@@ -1109,3 +1109,27 @@ func TestOpenSegmentRejectsOtherVersions(t *testing.T) {
 		}
 	}
 }
+
+func TestApplyValidation(t *testing.T) {
+	ctx := context.Background()
+	index, err := Open(&MemoryStore{}, "index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := [][]Change{
+		{{Key: "", Data: []byte("猫")}},
+		{{Key: "\xff", Data: []byte("猫")}},
+		{{Key: "\xff", Delete: true}},
+		{{Key: "a", Data: []byte{0xff}}},
+		{{Key: "a", Data: []byte("猫")}, {Key: "a", Delete: true}},
+	}
+	for _, changes := range invalid {
+		if err := index.Apply(ctx, changes); err == nil {
+			t.Fatalf("accepted %+v", changes)
+		}
+	}
+	// A deletion's content is ignored, so it is not validated.
+	if err := index.Apply(ctx, []Change{{Key: "a", Delete: true, Data: []byte{0xff}}}); err != nil {
+		t.Fatalf("delete with ignored content: %v", err)
+	}
+}
