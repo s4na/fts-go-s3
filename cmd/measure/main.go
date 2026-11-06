@@ -104,45 +104,34 @@ func run() error {
 	output := flag.String("output", "metrics.json", "output metrics")
 	batch := flag.Int("batch", 1000000, "documents per segment")
 	endpoint := flag.String("endpoint", "", "optional S3 endpoint")
-	dataDir := flag.String("data-dir", "", "directory for the on-disk index and source (default: a temporary directory)")
-	budgetMiB := flag.Int("memory-budget-mib", 0, "fail when an operation's peak heap delta exceeds this many MiB (0 disables)")
-	measureSync := flag.Bool("sync", true, "also measure Sync from an on-disk source")
 	flag.Parse()
 	if *batch < 1 {
 		return errors.New("batch must be positive")
 	}
-	if *budgetMiB < 0 {
-		return errors.New("memory budget must not be negative")
+	dataDir, err := os.MkdirTemp("", "zenbun-measure-")
+	if err != nil {
+		return err
 	}
-	if *dataDir == "" {
-		dir, err := os.MkdirTemp("", "zenbun-measure-")
-		if err != nil {
-			return err
-		}
-		defer func() { _ = os.RemoveAll(dir) }()
-		*dataDir = dir
-	}
+	defer func() { _ = os.RemoveAll(dataDir) }()
 	var backend zenbun.Store
 	if *endpoint != "" {
-		var err error
 		backend, err = s3store.New(s3store.Config{Endpoint: *endpoint, Bucket: "zenbun-measure", AccessKey: "testaccess", SecretKey: "testsecret"})
 		if err != nil {
 			return err
 		}
 	} else {
-		disk, err := newDiskStore(filepath.Join(*dataDir, "index"))
+		disk, err := newDiskStore(filepath.Join(dataDir, "index"))
 		if err != nil {
 			return err
 		}
 		backend = disk
 	}
-	sourceDisk, err := newDiskStore(filepath.Join(*dataDir, "source"))
+	sourceStore, err := newDiskStore(filepath.Join(dataDir, "source"))
 	if err != nil {
 		return err
 	}
 	ctx := context.Background()
 	store := &meter{Store: backend}
-	source := &meter{Store: sourceDisk}
 	open := func(prefix string) (*zenbun.Index, error) { return zenbun.Open(store, prefix) }
 
 	data, err := os.ReadFile(*queries)
@@ -167,10 +156,7 @@ func run() error {
 			firstKey = doc.ID
 		}
 		documents++
-		if !*measureSync {
-			return nil
-		}
-		_, err := source.Put(ctx, sourcePrefix+doc.ID, []byte(doc.Text), zenbun.PutOptions{})
+		_, err := sourceStore.Put(ctx, sourcePrefix+doc.ID, []byte(doc.Text), zenbun.PutOptions{})
 		return err
 	}); err != nil {
 		return err
@@ -181,7 +167,7 @@ func run() error {
 
 	operations := make(map[string]operation)
 	measure := func(name string, fn func() error) error {
-		op, err := measureOperation(store, source, fn)
+		op, err := measureOperation(store, fn)
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
@@ -327,62 +313,34 @@ func run() error {
 		return err
 	}
 
-	if *measureSync {
-		runSync := func() error {
-			index, err := open("sync-index/")
-			if err != nil {
-				return err
-			}
-			return index.Sync(ctx, source, sourcePrefix)
-		}
-		if err := measure("sync_initial", runSync); err != nil {
+	runSync := func() error {
+		index, err := open("sync-index/")
+		if err != nil {
 			return err
 		}
-		if err := measure("sync_unchanged", runSync); err != nil {
-			return err
-		}
-		if _, err := source.Put(ctx, sourcePrefix+firstKey, []byte("updated document"), zenbun.PutOptions{}); err != nil {
-			return err
-		}
-		if err := measure("sync_one_change", runSync); err != nil {
-			return err
-		}
+		return index.Sync(ctx, sourceStore, sourcePrefix)
+	}
+	if err := measure("sync_initial", runSync); err != nil {
+		return err
+	}
+	if err := measure("sync_unchanged", runSync); err != nil {
+		return err
+	}
+	if _, err := sourceStore.Put(ctx, sourcePrefix+firstKey, []byte("updated document"), zenbun.PutOptions{}); err != nil {
+		return err
+	}
+	if err := measure("sync_one_change", runSync); err != nil {
+		return err
 	}
 
-	var budget uint64
-	if *budgetMiB > 0 {
-		budget = uint64(*budgetMiB) << 20
-	}
 	fraction, inverse := readRatio(sourceBytes, received, len(items))
-	metrics := map[string]any{"source_document_bytes": sourceBytes, "index_to_full_scan_fraction": fraction, "full_scan_to_index_ratio": inverse, "batch_size": *batch, "documents": documents, "queries": len(items), "false_negatives": 0, "search_gets": gets, "search_received_bytes": received, "gets_per_query": float64(gets) / float64(len(items)), "bytes_per_query": float64(received) / float64(len(items)), "single_update_puts": operations["apply_one"].Puts, "manifest_bytes": len(manifest.Data), "build_seconds": operations["build"].Seconds, "latency_sample_queries": sampleCount, "simulated_get_latency_ms": 20, "parallel_latency_seconds": parallelSeconds, "serialized_latency_seconds": serialSeconds, "compactions": compactions, "memory_budget_bytes": budget, "operations": operations}
+	metrics := map[string]any{"source_document_bytes": sourceBytes, "index_to_full_scan_fraction": fraction, "full_scan_to_index_ratio": inverse, "batch_size": *batch, "documents": documents, "queries": len(items), "false_negatives": 0, "search_gets": gets, "search_received_bytes": received, "gets_per_query": float64(gets) / float64(len(items)), "bytes_per_query": float64(received) / float64(len(items)), "single_update_puts": operations["apply_one"].Puts, "manifest_bytes": len(manifest.Data), "build_seconds": operations["build"].Seconds, "latency_sample_queries": sampleCount, "simulated_get_latency_ms": 20, "parallel_latency_seconds": parallelSeconds, "serialized_latency_seconds": serialSeconds, "compactions": compactions, "operations": operations}
 	encoded, err := json.MarshalIndent(metrics, "", "  ")
 	if err != nil {
 		return err
 	}
 	fmt.Println(string(encoded))
-	if err := os.WriteFile(*output, encoded, 0644); err != nil {
-		return err
-	}
-	if over := overBudget(operations, budget); len(over) > 0 {
-		return fmt.Errorf("peak heap delta exceeds the %d MiB budget: %s", *budgetMiB, strings.Join(over, ", "))
-	}
-	return nil
-}
-
-// overBudget lists operations whose peak heap delta exceeds budget, in name
-// order. A zero budget disables the check.
-func overBudget(operations map[string]operation, budget uint64) []string {
-	if budget == 0 {
-		return nil
-	}
-	var over []string
-	for name, op := range operations {
-		if op.PeakHeapDeltaBytes > budget {
-			over = append(over, fmt.Sprintf("%s=%d", name, op.PeakHeapDeltaBytes))
-		}
-	}
-	sort.Strings(over)
-	return over
+	return os.WriteFile(*output, encoded, 0644)
 }
 
 func main() {

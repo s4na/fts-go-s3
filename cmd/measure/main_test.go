@@ -25,18 +25,3 @@ func TestReadRatio(t *testing.T) {
 		}
 	}
 }
-
-func TestOverBudget(t *testing.T) {
-	ops := map[string]operation{
-		"sync_initial": {PeakHeapDeltaBytes: 300},
-		"build":        {PeakHeapDeltaBytes: 200},
-		"search":       {PeakHeapDeltaBytes: 100},
-	}
-	if got := overBudget(ops, 0); got != nil {
-		t.Fatalf("disabled budget reported %v", got)
-	}
-	got := overBudget(ops, 100)
-	if len(got) != 2 || got[0] != "build=200" || got[1] != "sync_initial=300" {
-		t.Fatalf("overBudget = %v", got)
-	}
-}

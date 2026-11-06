@@ -25,10 +25,6 @@ type operation struct {
 	Gets               int64   `json:"gets"`
 	ReceivedBytes      int64   `json:"received_bytes"`
 	Puts               int64   `json:"puts"`
-	// SourceGets and SourceReceivedBytes count reads from the Sync source,
-	// which are separate from the index store's I/O above.
-	SourceGets          int64 `json:"source_gets"`
-	SourceReceivedBytes int64 `json:"source_received_bytes"`
 }
 
 func readHeap() (objects, allocs uint64) {
@@ -37,13 +33,11 @@ func readHeap() (objects, allocs uint64) {
 	return samples[0].Value.Uint64(), samples[1].Value.Uint64()
 }
 
-// measureOperation runs fn while sampling the heap and counting the I/O of the
-// index store and the Sync source.
-func measureOperation(store, source *meter, fn func() error) (operation, error) {
+// measureOperation runs fn while sampling the heap and counting store I/O.
+func measureOperation(store *meter, fn func() error) (operation, error) {
 	runtime.GC()
 	base, allocStart := readHeap()
 	gets, received, puts := store.Gets.Load(), store.Received.Load(), store.Puts.Load()
-	sourceGets, sourceReceived := source.Gets.Load(), source.Received.Load()
 	peak := base
 	var mu sync.Mutex
 	stop := make(chan struct{})
@@ -72,14 +66,12 @@ func measureOperation(store, source *meter, fn func() error) (operation, error) 
 	heap, allocEnd := readHeap()
 	peak = max(peak, heap)
 	return operation{
-		Seconds:             elapsed.Seconds(),
-		PeakHeapBytes:       peak,
-		PeakHeapDeltaBytes:  peak - base,
-		AllocBytes:          allocEnd - allocStart,
-		Gets:                store.Gets.Load() - gets,
-		ReceivedBytes:       store.Received.Load() - received,
-		Puts:                store.Puts.Load() - puts,
-		SourceGets:          source.Gets.Load() - sourceGets,
-		SourceReceivedBytes: source.Received.Load() - sourceReceived,
+		Seconds:            elapsed.Seconds(),
+		PeakHeapBytes:      peak,
+		PeakHeapDeltaBytes: peak - base,
+		AllocBytes:         allocEnd - allocStart,
+		Gets:               store.Gets.Load() - gets,
+		ReceivedBytes:      store.Received.Load() - received,
+		Puts:               store.Puts.Load() - puts,
 	}, err
 }
