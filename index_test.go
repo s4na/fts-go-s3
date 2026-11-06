@@ -23,18 +23,19 @@ func assertOracle(t *testing.T, index *Index, docs map[string]string, queries []
 	for _, query := range queries {
 		keys, err := index.Search(context.Background(), query)
 		if err != nil {
-			t.Fatalf("search %q: %v", query, err)
+			t.Errorf("Search(%q) error = %v", query, err)
+			continue
 		}
 		got := make(map[string]bool)
 		for _, key := range keys {
 			got[key] = true
 			if _, exists := docs[key]; !exists {
-				t.Fatalf("deleted key %q returned", key)
+				t.Errorf("Search(%q) returned deleted key %q", query, key)
 			}
 		}
 		for key, text := range docs {
 			if strings.Contains(normalized(text), normalized(query)) && !got[key] {
-				t.Fatalf("false negative query=%q key=%q text=%q", query, key, text)
+				t.Errorf("Search(%q) missed key %q with text %q", query, key, text)
 			}
 		}
 	}
@@ -324,6 +325,12 @@ func FuzzSegment(f *testing.F) {
 		reader, err := openSegment(ctx, store, segmentRef{Key: "segment", Size: int64(len(data)), Documents: 1})
 		if err == nil {
 			_, _, _ = reader.lookup(ctx, "a")
+			_, _ = reader.hasDocument(ctx, "one")
+			if len(reader.docFirst) > 0 {
+				_, _ = reader.documentBlock(ctx, 0)
+			}
+			_, _ = segmentDocuments(ctx, reader, false)
+			_, _ = segmentDocuments(ctx, reader, true)
 		}
 	})
 }
@@ -562,11 +569,20 @@ func TestReclaimExcludesWritesAfterBarrier(t *testing.T) {
 }
 
 func TestMixedSegmentVersions(t *testing.T) {
+	for _, version := range []uint32{legacySegmentVersion, v2SegmentVersion} {
+		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) { testMixedSegmentVersions(t, version) })
+	}
+}
+
+// testMixedSegmentVersions starts from one old-format segment, adds a segment
+// in the current format, and compacts them into the current format.
+func testMixedSegmentVersions(t *testing.T, version uint32) {
 	ctx := context.Background()
 	store := &MemoryStore{}
 	old, err := encodeSegmentVersion(map[string]indexedDocument{
-		"old": {Terms: terms("猫と犬")},
-	}, legacySegmentVersion)
+		"old":  {Terms: terms("猫と犬")},
+		"gone": {Deleted: true},
+	}, version)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -575,7 +591,7 @@ func TestMixedSegmentVersions(t *testing.T) {
 	}
 	initial, err := json.Marshal(manifest{
 		Version: manifestVersion, Generation: "old",
-		Segments: []segmentRef{{Key: "index/segments/old", Size: int64(len(old)), Documents: 1}},
+		Segments: []segmentRef{{Key: "index/segments/old", Size: int64(len(old)), Documents: 2}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -587,14 +603,24 @@ func TestMixedSegmentVersions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := index.Apply(ctx, []Change{{Key: "new", Data: []byte("猫と魚")}}); err != nil {
+	if err := index.Apply(ctx, []Change{{Key: "new", Data: []byte("猫と魚")}, {Key: "old", Data: []byte("猫と鳥")}}); err != nil {
 		t.Fatal(err)
 	}
-	assertOracle(t, index, map[string]string{"old": "猫と犬", "new": "猫と魚"}, []string{"猫", "猫と", "犬", "魚"})
+	want := map[string]string{"old": "猫と鳥", "new": "猫と魚"}
+	queries := []string{"猫", "猫と", "犬", "魚", "鳥"}
+	assertOracle(t, index, want, queries)
 	if ok, err := index.Compact(ctx); err != nil || !ok {
 		t.Fatalf("compact mixed versions: %t, %v", ok, err)
 	}
-	assertOracle(t, index, map[string]string{"old": "猫と犬", "new": "猫と魚"}, []string{"猫", "猫と", "犬", "魚"})
+	assertOracle(t, index, want, queries)
+	m, _, err := index.loadManifest(ctx)
+	if err != nil || len(m.Segments) != 1 {
+		t.Fatalf("manifest after compaction: %+v, %v", m, err)
+	}
+	r, err := index.segment(ctx, m.Segments[0])
+	if err != nil || r.version != segmentVersion {
+		t.Fatalf("compacted segment must use the current version: %+v, %v", r, err)
+	}
 }
 
 func TestInvalidVersionTwoPostings(t *testing.T) {
@@ -739,7 +765,7 @@ func TestSyncBatchDetectsConcurrentManifestChange(t *testing.T) {
 	}
 }
 
-func TestDefaultWriterUsesVersionTwo(t *testing.T) {
+func TestDefaultWriterUsesVersionThree(t *testing.T) {
 	ctx := context.Background()
 	writer, err := Open(&MemoryStore{}, "index")
 	if err != nil {
@@ -754,7 +780,7 @@ func TestDefaultWriterUsesVersionTwo(t *testing.T) {
 	}
 	r, err := writer.segment(ctx, m.Segments[0])
 	if err != nil || r.version != segmentVersion {
-		t.Fatalf("default writer must use v2: reader=%+v error=%v", r, err)
+		t.Fatalf("default writer must use v3: reader=%+v error=%v", r, err)
 	}
 }
 
@@ -848,7 +874,7 @@ func TestSearchReadsOversizedBlockOnlyOnce(t *testing.T) {
 
 func TestVersionTwoRejectsMissingDocumentBlocks(t *testing.T) {
 	ctx := context.Background()
-	data, err := encodeSegmentVersion(map[string]indexedDocument{"old": {Terms: terms("猫")}}, segmentVersion)
+	data, err := encodeSegmentVersion(map[string]indexedDocument{"old": {Terms: terms("猫")}}, v2SegmentVersion)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1034,5 +1060,41 @@ func TestReclaimConflictRetriesAreBounded(t *testing.T) {
 	})
 	if !errors.Is(err, ErrConflict) || store.attempts != 3 {
 		t.Fatalf("persistent conflicts: attempts=%d error=%v", store.attempts, err)
+	}
+}
+
+func TestSegmentDocumentsWithoutTerms(t *testing.T) {
+	ctx := context.Background()
+	index, _ := Open(&MemoryStore{}, "index/")
+	if err := index.Apply(ctx, []Change{{Key: "a", Data: []byte("猫と犬"), ETag: "e1"}, {Key: "b", Delete: true}}); err != nil {
+		t.Fatal(err)
+	}
+	m, _, err := index.loadManifest(ctx)
+	if err != nil || len(m.Segments) != 1 {
+		t.Fatalf("load segment: %+v %v", m.Segments, err)
+	}
+	reader, err := index.segment(ctx, m.Segments[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err := segmentDocuments(ctx, reader, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := segmentDocuments(ctx, reader, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(full["a"].Terms) == 0 {
+		t.Fatal("full read lost terms")
+	}
+	if len(state) != len(full) {
+		t.Fatalf("state read has %d documents; want %d", len(state), len(full))
+	}
+	for key, doc := range full {
+		got := state[key]
+		if got.Terms != nil || got.Deleted != doc.Deleted || got.ETag != doc.ETag {
+			t.Fatalf("state[%q] = %+v; want deleted=%v etag=%q without terms", key, got, doc.Deleted, doc.ETag)
+		}
 	}
 }

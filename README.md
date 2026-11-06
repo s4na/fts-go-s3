@@ -69,7 +69,7 @@ func main() {
 
 `articles/` 以下の文書を `indexes/articles/` の索引に同期して検索します。`Sync` は一覧の ETag を比べ、追加・更新・削除された文書だけを反映します。
 
-接続先と認証情報は `S3Config` で渡します。AWS 以外の S3 互換ストレージ（MinIO、Cloudflare R2、VersityGW、SeaweedFS など）でも同じです。
+接続先と認証情報は `s3store.Config` で渡します。AWS 以外の S3 互換ストレージ（MinIO、Cloudflare R2、VersityGW、SeaweedFS など）でも同じです。
 
 ```go
 import (
@@ -77,7 +77,7 @@ import (
     "github.com/s4na/zenbun/s3store"
 )
 
-store, err := s3store.NewS3Store(s3store.S3Config{
+store, err := s3store.New(s3store.Config{
     Endpoint:  "https://s3.example.com", // 必須。AWS 以外ならそのサービスの URL
     Bucket:    "example-bucket",
     Region:    "us-east-1", // 署名に使う。省略時は us-east-1
@@ -329,8 +329,8 @@ if result.Truncated {
 
 | `FindOptions` | 内容 | 既定値 |
 |---|---|---|
-| `Mode` | `snippets`（一致した行と前後の行）・`keys`（キーだけ）・`count`（件数だけ） | `snippets` |
-| `Limit` | 本文で一致を確認できた文書がこの数に達したら止める | 20 |
+| `Mode` | `snippets`（一致した行と前後の行）・`keys`（キーだけ）・`count`（件数だけ。`Limit` で止まるので総数とは限らない） | `snippets` |
+| `Limit` | 本文で一致を確認できた文書がこの数に達したら止める。`count` も同じ。総数が必要なら `Limit` を大きくするか、`After` に `Next` を渡して `Count` を足し合わせる | 20 |
 | `Context` | 一致した行の前後に付ける行数（最大 20） | 0 |
 | `MaxSnippetsPerDoc` | 1 文書あたりの抜粋の数 | 3 |
 | `MaxBytes` | 抜粋の合計バイト数。超えた分は文字の途中で切らずに打ち切る | 16 KiB |
@@ -457,17 +457,17 @@ zenbun reclaim -index indexes/articles/ -grace 24h
 | アダプター | パッケージ | 用途 |
 |---|---|---|
 | `MemoryStore` | `zenbun` | テストや試用 |
-| `S3Store` | `github.com/s4na/zenbun/s3store` | Amazon S3 と S3 互換ストレージ（MinIO、Cloudflare R2、VersityGW、SeaweedFS など） |
-| `GCSStore` | `github.com/s4na/zenbun/gcsstore` | Google Cloud Storage（JSON API） |
+| `s3store.Store` | `github.com/s4na/zenbun/s3store` | Amazon S3 と S3 互換ストレージ（MinIO、Cloudflare R2、VersityGW、SeaweedFS など） |
+| `gcsstore.Store` | `github.com/s4na/zenbun/gcsstore` | Google Cloud Storage（JSON API） |
 
 ```go
 var store zenbun.Store
 var err error
 switch backend {
 case "gcs":
-    store, err = gcsstore.NewGCSStore(gcsstore.GCSConfig{Bucket: "example-bucket", HTTPClient: authenticatedClient})
+    store, err = gcsstore.New(gcsstore.Config{Bucket: "example-bucket", HTTPClient: authenticatedClient})
 default:
-    store, err = s3store.NewS3Store(s3store.S3Config{Endpoint: "https://s3.example.com", Bucket: "example-bucket"})
+    store, err = s3store.New(s3store.Config{Endpoint: "https://s3.example.com", Bucket: "example-bucket"})
 }
 index, err := zenbun.Open(store, "indexes/articles/")
 ```
@@ -486,10 +486,10 @@ func TestMyStore(t *testing.T) {
 
   | 優先 | 取得元 | 条件 |
   |---|---|---|
-  | 1 | `S3Config` の `AccessKey` / `SecretKey` / `SessionToken` | `AccessKey` と `SecretKey` の少なくとも一方を指定した場合（このとき環境変数は読まない） |
+  | 1 | `s3store.Config` の `AccessKey` / `SecretKey` / `SessionToken` | `AccessKey` と `SecretKey` の少なくとも一方を指定した場合（このとき環境変数は読まない） |
   | 2 | 環境変数 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` | `AccessKey` と `SecretKey` を両方省略した場合 |
 
-  最終的に `AccessKey` と `SecretKey` がそろわない場合、`NewS3Store` はエラーを返します。
+  最終的に `AccessKey` と `SecretKey` がそろわない場合、`s3store.New` はエラーを返します。
 - **リージョン**：S3 互換ストレージでも署名の計算に使います。省略時は `us-east-1` です。多くの互換ストレージはこの値のまま動きます。動かない場合は、サービスの指定に合わせてください。
 - **アドレス形式**：標準ではパス形式を使います。`VirtualHost: true` でバーチャルホスト形式に切り替えられます。
 - **HTTP**：標準のタイムアウトは 30 秒です。`HTTPClient` を渡す場合は、タイムアウトを自分で設定してください。検索は最大 8 並列で GET するため、`http.Transport` の `MaxIdleConnsPerHost` を 8 以上にすると接続を再利用しやすくなります（同時接続数の上限ではありません）。
@@ -505,7 +505,7 @@ import (
 )
 
 client, err := google.DefaultClient(ctx, "https://www.googleapis.com/auth/devstorage.read_write")
-store, err := gcsstore.NewGCSStore(gcsstore.GCSConfig{Bucket: "example-bucket", HTTPClient: client})
+store, err := gcsstore.New(gcsstore.Config{Bucket: "example-bucket", HTTPClient: client})
 ```
 
 - **認証**：認証済みの `HTTPClient`（上の例ではアプリケーションのデフォルト認証情報）を渡すと、トークンの更新もそのクライアントに任せます。`golang.org/x/oauth2` は zenbun の依存ではないので、使う側で追加してください。短時間の作業なら、`AccessToken` に OAuth 2.0 アクセストークンを直接渡すこともできます。どちらも指定しない場合は、環境変数 `GOOGLE_OAUTH_ACCESS_TOKEN` を読みます。
@@ -528,6 +528,8 @@ go install github.com/s4na/zenbun/cmd/zenbun@latest
 | `zenbun read -index <prefix> [-start -end -max-bytes] <key>` | 文書の行範囲を JSON で表示（[Read](#行範囲を指定して読む-read)） |
 | `zenbun compact -index <prefix>` | まとめられるセグメントがなくなるまでコンパクション |
 | `zenbun reclaim -index <prefix> -grace <期間>` | 不要なセグメントを回収（`-grace` は `24h` や `90m` の形式、既定値 `24h`） |
+
+オプションは引数より前に置いてください（`zenbun search -index x 日本語`）。引数の後ろに置くとエラーになります。`zenbun help`、`zenbun -h`、`zenbun <コマンド> -h` で使い方を表示します（ストアには接続しません）。
 
 `-storage` で保存先のアダプターを `s3`（既定）か `gcs` から選びます。省略すると環境変数 `ZENBUN_STORAGE` の値を使います。
 
@@ -571,7 +573,7 @@ CI の [Corpus oracle and measurements](.github/workflows/oracle.yml) は、Wiki
 
 ## 保存形式と互換性
 
-マニフェストとセグメントには形式バージョンがあり、知らないバージョンは読み込みません。新しいセグメントは**保存形式 v2** で書きます。v1 と v2 の両方を読めますが、v2 を書いた索引は古いライブラリでは読めません。同じ索引を複数のプロセスで使う場合は、書き込みを止めて全プロセスを更新してから再開してください。
+マニフェストとセグメントには形式バージョンがあり、知らないバージョンは読み込みません。新しいセグメントは**保存形式 v3** で書きます。v1・v2・v3 のすべてを読めますが、v3 を書いた索引は古いライブラリでは読めません。同じ索引を複数のプロセスで使う場合は、書き込みを止めて全プロセスを更新してから再開してください。
 
 正規化ライブラリの更新で正規化結果が変わった場合は、索引を元の本文から作り直す必要があります。詳しくは [保存形式の仕様](docs/format.md) を参照してください。
 

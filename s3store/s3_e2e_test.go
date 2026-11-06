@@ -17,7 +17,7 @@ func TestS3EndToEnd(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	store, err := NewS3Store(S3Config{Endpoint: endpoint, Bucket: "zenbun-test", AccessKey: "testaccess", SecretKey: "testsecret"})
+	store, err := New(Config{Endpoint: endpoint, Bucket: "zenbun-test", AccessKey: "testaccess", SecretKey: "testsecret"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,7 +15,9 @@ const syncBatchSize = 1000
 // It is intended for an index dedicated to one source prefix; source listing
 // and reads must be stable or externally coordinated during synchronization.
 // Large changes are published in batches: if an error occurs, prior batches
-// remain visible and a subsequent Sync can resume. Each batch uses manifest CAS.
+// remain visible and a subsequent Sync can resume. Each batch uses manifest CAS,
+// so Sync returns an error matching ErrConflict if another writer publishes
+// first; reload and call it again, for example through RetryConflict.
 func (i *Index) Sync(ctx context.Context, source Store, sourcePrefix string) error {
 	if source == nil || sourcePrefix == "" {
 		return errors.New("zenbun: source and source prefix are required")
@@ -27,13 +29,16 @@ func (i *Index) Sync(ctx context.Context, source Store, sourcePrefix string) err
 	if err != nil {
 		return err
 	}
+	// Only ETags and deletion state are needed to detect changes, so term lists
+	// are not decoded. The map still grows with the number of indexed keys; see
+	// issue #65 for the key-ordered merge that removes that dependency.
 	indexed := make(map[string]indexedDocument)
 	for _, ref := range m.Segments {
 		reader, err := i.segment(ctx, ref)
 		if err != nil {
 			return err
 		}
-		docs, err := segmentDocuments(ctx, reader)
+		docs, err := segmentDocuments(ctx, reader, false)
 		if err != nil {
 			return err
 		}

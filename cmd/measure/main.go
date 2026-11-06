@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -108,10 +109,10 @@ func run() error {
 	measureSync := flag.Bool("sync", true, "also measure Sync from an on-disk source")
 	flag.Parse()
 	if *batch < 1 {
-		return fmt.Errorf("batch must be positive")
+		return errors.New("batch must be positive")
 	}
 	if *budgetMiB < 0 {
-		return fmt.Errorf("memory budget must not be negative")
+		return errors.New("memory budget must not be negative")
 	}
 	if *dataDir == "" {
 		dir, err := os.MkdirTemp("", "zenbun-measure-")
@@ -124,7 +125,7 @@ func run() error {
 	var backend zenbun.Store
 	if *endpoint != "" {
 		var err error
-		backend, err = s3store.NewS3Store(s3store.S3Config{Endpoint: *endpoint, Bucket: "zenbun-measure", AccessKey: "testaccess", SecretKey: "testsecret"})
+		backend, err = s3store.New(s3store.Config{Endpoint: *endpoint, Bucket: "zenbun-measure", AccessKey: "testaccess", SecretKey: "testsecret"})
 		if err != nil {
 			return err
 		}
@@ -174,7 +175,7 @@ func run() error {
 		return err
 	}
 	if documents == 0 {
-		return fmt.Errorf("corpus has no documents")
+		return errors.New("corpus has no documents")
 	}
 
 	operations := make(map[string]operation)

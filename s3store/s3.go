@@ -21,27 +21,27 @@ import (
 	zenbun "github.com/s4na/zenbun"
 )
 
-// S3Config configures an S3-compatible bucket. Credentials are static; when
+// Config configures an S3-compatible bucket. Credentials are static; when
 // omitted, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN are
 // read from the environment. Endpoint must contain a scheme and host.
-type S3Config struct {
+type Config struct {
 	Endpoint, Bucket, Region           string
 	AccessKey, SecretKey, SessionToken string
 	VirtualHost                        bool
 	HTTPClient                         *http.Client
 }
 
-var _ zenbun.Store = (*S3Store)(nil)
+var _ zenbun.Store = (*Store)(nil)
 
-// S3Store implements zenbun.Store using the S3 API and Signature Version 4.
-type S3Store struct {
-	config   S3Config
+// Store implements zenbun.Store using the S3 API and Signature Version 4.
+type Store struct {
+	config   Config
 	endpoint *url.URL
 	client   *http.Client
 }
 
-// NewS3Store creates a store for an S3-compatible bucket.
-func NewS3Store(config S3Config) (*S3Store, error) {
+// New creates a store for an S3-compatible bucket.
+func New(config Config) (*Store, error) {
 	endpoint, err := url.Parse(config.Endpoint)
 	if err != nil || endpoint == nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
 		return nil, errors.New("s3: invalid endpoint")
@@ -66,7 +66,7 @@ func NewS3Store(config S3Config) (*S3Store, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
-	return &S3Store{config: config, endpoint: endpoint, client: client}, nil
+	return &Store{config: config, endpoint: endpoint, client: client}, nil
 }
 
 func escapeS3(s string, slash bool) string {
@@ -96,7 +96,10 @@ func signature(key []byte, value string) []byte {
 	return h.Sum(nil)
 }
 
-func (s *S3Store) request(ctx context.Context, method, key string, query url.Values, headers http.Header, data []byte, retry bool) (int, http.Header, []byte, error) {
+// maxErrorBody bounds how much of an HTTP error response is read.
+const maxErrorBody = 64 << 10
+
+func (s *Store) request(ctx context.Context, method, key string, query url.Values, headers http.Header, data []byte, retry bool) (int, http.Header, []byte, error) {
 	u := *s.endpoint
 	path := strings.TrimRight(u.Path, "/")
 	if s.config.VirtualHost {
@@ -141,7 +144,12 @@ func (s *S3Store) request(ctx context.Context, method, key string, query url.Val
 			}
 			return 0, nil, nil, fmt.Errorf("s3: request: %w", err)
 		}
-		body, readErr := io.ReadAll(resp.Body)
+		reader := io.Reader(resp.Body)
+		if resp.StatusCode >= 400 {
+			// Error bodies are only inspected for an error code; keep them bounded.
+			reader = io.LimitReader(resp.Body, maxErrorBody)
+		}
+		body, readErr := io.ReadAll(reader)
 		closeErr := resp.Body.Close()
 		if readErr != nil {
 			return 0, nil, nil, fmt.Errorf("s3: read response: %w", readErr)
@@ -157,7 +165,7 @@ func (s *S3Store) request(ctx context.Context, method, key string, query url.Val
 	panic("unreachable")
 }
 
-func (s *S3Store) sign(req *http.Request, data []byte, now time.Time) {
+func (s *Store) sign(req *http.Request, data []byte, now time.Time) {
 	date, stamp := now.Format("20060102"), now.Format("20060102T150405Z")
 	payload := digest(data)
 	req.Header.Set("X-Amz-Date", stamp)
@@ -193,30 +201,60 @@ func (s *S3Store) sign(req *http.Request, data []byte, now time.Time) {
 	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential="+s.config.AccessKey+"/"+scope+", SignedHeaders="+signed+", Signature="+hex.EncodeToString(signature(key, toSign)))
 }
 
-// S3Error reports an S3 HTTP error not mapped to a Store sentinel.
-type S3Error struct {
+// Error reports an S3 HTTP error not mapped to a Store sentinel. Code is the
+// <Code> element of the XML error body (for example "NoSuchBucket"), or empty
+// when the response carried none. Store methods return it as *Error; use
+// errors.As to inspect it.
+type Error struct {
 	Operation  string
 	StatusCode int
+	Code       string
 }
 
-func (e *S3Error) Error() string {
+func (e *Error) Error() string {
+	if e.Code != "" {
+		return fmt.Sprintf("s3 %s: HTTP %d (%s)", e.Operation, e.StatusCode, e.Code)
+	}
 	return fmt.Sprintf("s3 %s: HTTP %d", e.Operation, e.StatusCode)
 }
 
-func s3Error(operation string, status int) error {
+// s3ErrorCode extracts <Code> from an S3 XML error body, or "" if unparsable.
+func s3ErrorCode(body []byte) string {
+	var e struct {
+		Code string `xml:"Code"`
+	}
+	if xml.Unmarshal(body, &e) != nil {
+		return ""
+	}
+	return strings.TrimSpace(e.Code)
+}
+
+// objectMissing reports whether a 404 means the object (not the bucket) is
+// absent. Only a missing-bucket style code is rejected: a 404 without a
+// recognizable code (for example from a compatible server that sends no body)
+// is treated as a missing object.
+func s3ObjectMissing(body []byte) bool {
+	code := s3ErrorCode(body)
+	return code == "" || code == "NoSuchKey"
+}
+
+func s3Error(operation string, status int, body []byte) error {
 	switch status {
 	case http.StatusNotFound:
-		return fmt.Errorf("s3 %s: %w", operation, zenbun.ErrNotFound)
+		if s3ObjectMissing(body) {
+			return fmt.Errorf("s3 %s: %w", operation, zenbun.ErrNotFound)
+		}
+		return &Error{Operation: operation, StatusCode: status, Code: s3ErrorCode(body)}
 	case http.StatusPreconditionFailed, http.StatusConflict:
 		return fmt.Errorf("s3 %s: %w", operation, zenbun.ErrConflict)
 	case http.StatusRequestedRangeNotSatisfiable:
 		return fmt.Errorf("s3 %s: %w", operation, zenbun.ErrInvalidRange)
 	default:
-		return &S3Error{Operation: operation, StatusCode: status}
+		return &Error{Operation: operation, StatusCode: status, Code: s3ErrorCode(body)}
 	}
 }
 
-func (s *S3Store) Get(ctx context.Context, key string, r *zenbun.ByteRange) (zenbun.Object, error) {
+func (s *Store) Get(ctx context.Context, key string, r *zenbun.ByteRange) (zenbun.Object, error) {
 	headers := make(http.Header)
 	if r != nil {
 		if r.Start < 0 || r.End <= r.Start {
@@ -229,7 +267,7 @@ func (s *S3Store) Get(ctx context.Context, key string, r *zenbun.ByteRange) (zen
 		return zenbun.Object{}, err
 	}
 	if r == nil && status != http.StatusOK || r != nil && status != http.StatusPartialContent {
-		return zenbun.Object{}, s3Error("get", status)
+		return zenbun.Object{}, s3Error("get", status, body)
 	}
 	if r != nil && int64(len(body)) != r.End-r.Start {
 		return zenbun.Object{}, zenbun.ErrInvalidRange
@@ -237,7 +275,7 @@ func (s *S3Store) Get(ctx context.Context, key string, r *zenbun.ByteRange) (zen
 	return zenbun.Object{Data: body, ETag: header.Get("ETag")}, nil
 }
 
-func (s *S3Store) Put(ctx context.Context, key string, data []byte, options zenbun.PutOptions) (string, error) {
+func (s *Store) Put(ctx context.Context, key string, data []byte, options zenbun.PutOptions) (string, error) {
 	if options.IfNoneMatch && options.IfMatch != "" {
 		return "", errors.New("put: mutually exclusive conditions")
 	}
@@ -248,15 +286,15 @@ func (s *S3Store) Put(ctx context.Context, key string, data []byte, options zenb
 	if options.IfMatch != "" {
 		headers.Set("If-Match", options.IfMatch)
 	}
-	status, header, _, err := s.request(ctx, http.MethodPut, key, nil, headers, data, false)
+	status, header, body, err := s.request(ctx, http.MethodPut, key, nil, headers, data, false)
 	if err != nil {
 		return "", err
 	}
-	if status == http.StatusNotFound && options.IfMatch != "" {
+	if status == http.StatusNotFound && options.IfMatch != "" && s3ObjectMissing(body) {
 		return "", fmt.Errorf("s3 put: %w", zenbun.ErrConflict)
 	}
 	if status != http.StatusOK {
-		return "", s3Error("put", status)
+		return "", s3Error("put", status, body)
 	}
 	etag := header.Get("ETag")
 	if etag == "" {
@@ -265,18 +303,22 @@ func (s *S3Store) Put(ctx context.Context, key string, data []byte, options zenb
 	return etag, nil
 }
 
-func (s *S3Store) Delete(ctx context.Context, key string) error {
-	status, _, _, err := s.request(ctx, http.MethodDelete, key, nil, nil, nil, false)
+func (s *Store) Delete(ctx context.Context, key string) error {
+	status, _, body, err := s.request(ctx, http.MethodDelete, key, nil, nil, nil, false)
 	if err != nil {
 		return err
 	}
-	if status != http.StatusNoContent && status != http.StatusOK && status != http.StatusNotFound {
-		return s3Error("delete", status)
+	switch {
+	case status == http.StatusNoContent, status == http.StatusOK:
+		return nil
+	case status == http.StatusNotFound && s3ObjectMissing(body):
+		return nil
+	default:
+		return s3Error("delete", status, body)
 	}
-	return nil
 }
 
-func (s *S3Store) List(ctx context.Context, prefix string) ([]zenbun.ObjectInfo, error) {
+func (s *Store) List(ctx context.Context, prefix string) ([]zenbun.ObjectInfo, error) {
 	var result []zenbun.ObjectInfo
 	token := ""
 	for {
@@ -289,7 +331,7 @@ func (s *S3Store) List(ctx context.Context, prefix string) ([]zenbun.ObjectInfo,
 			return nil, err
 		}
 		if status != http.StatusOK {
-			return nil, s3Error("list", status)
+			return nil, s3Error("list", status, body)
 		}
 		var page struct {
 			Contents []struct {
