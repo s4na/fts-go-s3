@@ -307,10 +307,14 @@ func (s *S3Store) Delete(ctx context.Context, key string) error {
 	if err != nil {
 		return err
 	}
-	if status != http.StatusNoContent && status != http.StatusOK && !(status == http.StatusNotFound && s3ObjectMissing(body)) {
+	switch {
+	case status == http.StatusNoContent, status == http.StatusOK:
+		return nil
+	case status == http.StatusNotFound && s3ObjectMissing(body):
+		return nil
+	default:
 		return s3Error("delete", status, body)
 	}
-	return nil
 }
 
 func (s *S3Store) List(ctx context.Context, prefix string) ([]zenbun.ObjectInfo, error) {

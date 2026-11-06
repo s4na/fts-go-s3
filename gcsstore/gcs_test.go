@@ -122,6 +122,14 @@ func TestGCSMissingBucketIsNotObjectNotFound(t *testing.T) {
 	if err := store.Delete(ctx, "k"); err != nil {
 		t.Errorf("missing object delete: %v", err)
 	}
+	// An object name containing the bucket-missing words is still a missing object.
+	body = `{"error":{"code":404,"message":"No such object: bucket/the specified bucket does not exist/k","errors":[{"message":"No such object: bucket/the specified bucket does not exist/k","domain":"global","reason":"notFound"}]}}`
+	if _, err := store.Get(ctx, "k", nil); !errors.Is(err, zenbun.ErrNotFound) {
+		t.Errorf("missing object with bucket words in its name: %v", err)
+	}
+	if err := store.Delete(ctx, "k"); err != nil {
+		t.Errorf("missing object with bucket words in its name, delete: %v", err)
+	}
 	body = "" // unidentifiable 404 keeps the previous behavior
 	if _, err := store.Get(ctx, "k", nil); !errors.Is(err, zenbun.ErrNotFound) {
 		t.Errorf("empty 404: %v", err)

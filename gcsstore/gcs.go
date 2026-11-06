@@ -211,7 +211,9 @@ func gcsErrorInfo(body []byte) (reason string, bucketMissing bool) {
 		}
 	}
 	for _, m := range messages {
-		if strings.Contains(strings.ToLower(m), "bucket does not exist") {
+		// Match from the start: an object-missing message ends with the
+		// user-controlled object name, which may contain the same words.
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(m)), "the specified bucket does not exist") {
 			bucketMissing = true
 		}
 	}
@@ -315,10 +317,14 @@ func (s *GCSStore) Delete(ctx context.Context, key string) error {
 	if err != nil {
 		return err
 	}
-	if status != http.StatusNoContent && status != http.StatusOK && !(status == http.StatusNotFound && !gcsBucketMissing(body)) {
+	switch {
+	case status == http.StatusNoContent, status == http.StatusOK:
+		return nil
+	case status == http.StatusNotFound && !gcsBucketMissing(body):
+		return nil
+	default:
 		return gcsError("delete", status, body)
 	}
-	return nil
 }
 
 func (s *GCSStore) List(ctx context.Context, prefix string) ([]zenbun.ObjectInfo, error) {
