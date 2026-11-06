@@ -73,9 +73,12 @@ func TestQueryValidation(t *testing.T) {
 			t.Fatalf("accepted %+v", q)
 		}
 	}
-	// The word limit applies to structured queries only, not to Search.
-	if keys, err := index.Search(context.Background(), strings.Repeat("猫", 100)); err != nil || len(keys) != 0 {
-		t.Fatalf("long search: %v %v", keys, err)
+	// Search shares the word length limit with structured queries.
+	if _, err := index.Search(context.Background(), strings.Repeat("猫", 100)); err == nil {
+		t.Fatal("accepted a search longer than the word limit")
+	}
+	if _, err := index.Search(context.Background(), strings.Repeat("a", maxQueryWordBytes)); err != nil {
+		t.Fatalf("search at the word limit: %v", err)
 	}
 	for _, options := range []FindOptions{{Mode: "all"}, {Limit: -1}, {Context: maxFindContext + 1}} {
 		if _, err := index.Find(context.Background(), store, Query{All: [][]string{{"猫"}}}, options); err == nil {

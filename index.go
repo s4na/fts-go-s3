@@ -176,7 +176,11 @@ func (i *Index) Apply(ctx context.Context, changes []Change) error {
 	}
 	docs := make(map[string]indexedDocument, len(changes))
 	for _, change := range changes {
-		if change.Key == "" || !utf8.ValidString(change.Key) || !change.Delete && !utf8.Valid(change.Data) {
+		data := change.Data
+		if change.Delete {
+			data = nil // A deletion has no content to check.
+		}
+		if !validDocument(change.Key, data) {
 			return errors.New("zenbun: document key and content must be valid UTF-8")
 		}
 		if _, exists := docs[change.Key]; exists {
@@ -453,12 +457,12 @@ func (r *segmentReader) hasDocument(ctx context.Context, key string) (bool, erro
 
 // Search returns candidate document keys. It may include false positives;
 // callers should read and verify source documents when exact matches matter.
-// Empty queries are rejected; matching uses NFKC, lowercase and character grams.
+// The query must be nonempty UTF-8 of at most 256 bytes, the same word limit
+// as SearchQuery; matching uses NFKC, lowercase and character grams.
 func (i *Index) Search(ctx context.Context, query string) ([]string, error) {
-	if !utf8.ValidString(query) || query == "" {
-		return nil, errors.New("zenbun: query must be nonempty UTF-8")
+	if query == "" || len(query) > maxQueryWordBytes || !utf8.ValidString(query) {
+		return nil, fmt.Errorf("zenbun: query must be nonempty UTF-8 up to %d bytes", maxQueryWordBytes)
 	}
-	// Search predates Query and keeps accepting words of any length.
 	return i.searchQuery(ctx, Query{All: [][]string{{query}}})
 }
 
