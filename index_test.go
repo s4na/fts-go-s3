@@ -1036,3 +1036,39 @@ func TestReclaimConflictRetriesAreBounded(t *testing.T) {
 		t.Fatalf("persistent conflicts: attempts=%d error=%v", store.attempts, err)
 	}
 }
+
+func TestSegmentDocumentsWithoutTerms(t *testing.T) {
+	ctx := context.Background()
+	index, _ := Open(&MemoryStore{}, "index/")
+	if err := index.Apply(ctx, []Change{{Key: "a", Data: []byte("猫と犬"), ETag: "e1"}, {Key: "b", Delete: true}}); err != nil {
+		t.Fatal(err)
+	}
+	m, _, err := index.loadManifest(ctx)
+	if err != nil || len(m.Segments) != 1 {
+		t.Fatalf("load segment: %+v %v", m.Segments, err)
+	}
+	reader, err := index.segment(ctx, m.Segments[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err := segmentDocuments(ctx, reader, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := segmentDocuments(ctx, reader, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(full["a"].Terms) == 0 {
+		t.Fatal("full read lost terms")
+	}
+	if len(state) != len(full) {
+		t.Fatalf("state read has %d documents; want %d", len(state), len(full))
+	}
+	for key, doc := range full {
+		got := state[key]
+		if got.Terms != nil || got.Deleted != doc.Deleted || got.ETag != doc.ETag {
+			t.Fatalf("state[%q] = %+v; want deleted=%v etag=%q without terms", key, got, doc.Deleted, doc.ETag)
+		}
+	}
+}

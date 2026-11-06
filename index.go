@@ -420,6 +420,25 @@ func readDocument(ctx context.Context, reader *segmentReader, key string) (index
 	return doc, true, nil
 }
 
+// documentState is a document record without its term list. Decoding into it
+// skips the terms array instead of allocating one string per term.
+type documentState struct {
+	Deleted bool   `json:"deleted,omitempty"`
+	ETag    string `json:"etag,omitempty"`
+}
+
+func readDocumentState(ctx context.Context, reader *segmentReader, key string) (indexedDocument, bool, error) {
+	data, found, err := reader.lookup(ctx, "k"+key)
+	if err != nil || !found {
+		return indexedDocument{}, found, err
+	}
+	var state documentState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return indexedDocument{}, false, errors.New("zenbun: invalid document record")
+	}
+	return indexedDocument{Deleted: state.Deleted, ETag: state.ETag}, true, nil
+}
+
 // Search returns candidate document keys. It may include false positives;
 // callers should read and verify source documents when exact matches matter.
 // Empty queries are rejected; matching uses NFKC, lowercase and character grams.
@@ -613,7 +632,10 @@ func (s *segmentSnapshot) Get(ctx context.Context, key string, r *ByteRange) (Ob
 	return Object{}, io.ErrUnexpectedEOF
 }
 
-func segmentDocuments(ctx context.Context, reader *segmentReader) (map[string]indexedDocument, error) {
+// segmentDocuments reads every document record of a segment. With withTerms
+// false, the returned records omit Terms so callers that only compare ETags
+// and deletion state, such as Sync, keep memory independent of term counts.
+func segmentDocuments(ctx context.Context, reader *segmentReader, withTerms bool) (map[string]indexedDocument, error) {
 	// Dictionary blocks follow the data entries. Fetch them and the footer once,
 	// then read only the leading document entries, not the posting lists.
 	tailOffset := reader.blocks[0].Offset
@@ -665,9 +687,13 @@ func segmentDocuments(ctx context.Context, reader *segmentReader) (map[string]in
 	if len(keys) != reader.ref.Documents {
 		return nil, errors.New("zenbun: invalid segment document count")
 	}
+	read := readDocument
+	if !withTerms {
+		read = readDocumentState
+	}
 	docs := make(map[string]indexedDocument, len(keys))
 	for _, key := range keys {
-		doc, found, err := readDocument(ctx, reader, key)
+		doc, found, err := read(ctx, reader, key)
 		if err != nil {
 			return nil, err
 		}
@@ -715,7 +741,7 @@ func (i *Index) Compact(ctx context.Context) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		part, err := segmentDocuments(ctx, reader)
+		part, err := segmentDocuments(ctx, reader, true)
 		if err != nil {
 			return false, err
 		}
